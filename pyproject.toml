@@ -30,7 +30,7 @@ llm = [
 ]
 dev = [
   "pytest>=8,<10",
-  "pytest-asyncio>=0.23,<1",
+  "pytest-asyncio>=0.23,<2",
   "respx>=0.21,<1",
   "ruff>=0.6,<1",
 ]
