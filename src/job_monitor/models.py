@@ -1,0 +1,187 @@
+from __future__ import annotations
+
+import hashlib
+import re
+from dataclasses import dataclass
+from datetime import UTC, datetime
+from enum import StrEnum
+from typing import Any
+from urllib.parse import urlsplit, urlunsplit
+
+from pydantic import BaseModel, ConfigDict, Field, HttpUrl, field_validator, model_validator
+
+
+class AtsType(StrEnum):
+    GREENHOUSE = "greenhouse"
+    LEVER = "lever"
+    ASHBY = "ashby"
+    SMARTRECRUITERS = "smartrecruiters"
+    WORKDAY = "workday"
+    JSONLD = "jsonld"
+
+
+class ProfileName(StrEnum):
+    HEALTHCARE = "healthcare"
+    SEMICONDUCTOR = "semiconductor"
+    TECH = "tech"
+
+
+class Seniority(StrEnum):
+    ENTRY = "entry"
+    MID = "mid"
+    SENIOR = "senior"
+    LEAD = "lead"
+    DIRECTOR = "director_plus"
+    UNKNOWN = "unknown"
+
+
+class RemoteType(StrEnum):
+    ONSITE = "onsite"
+    HYBRID = "hybrid"
+    REMOTE = "remote"
+    UNKNOWN = "unknown"
+
+
+class VisaSupport(StrEnum):
+    SUPPORTS = "supports"
+    LIKELY_SUPPORTS = "likely_supports"
+    CASE_BY_CASE = "case_by_case"
+    DOES_NOT_SUPPORT = "does_not_support"
+    UNKNOWN = "unknown"
+
+
+class CompanyConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    slug: str
+    name: str
+    careers_url: HttpUrl
+    ats_type: AtsType
+    ats_config: dict[str, Any] = Field(default_factory=dict)
+    industry: str
+    profiles: list[str] = Field(min_length=1)
+    priority: int = Field(default=2, ge=1, le=3)
+    enabled: bool = True
+    source_verified: bool = False
+    visa_support: VisaSupport = VisaSupport.UNKNOWN
+    visa_notes: str | None = None
+    ndx_member: bool = False
+    ndx_as_of: str | None = None
+
+    @field_validator("slug")
+    @classmethod
+    def valid_slug(cls, value: str) -> str:
+        if not re.fullmatch(r"[a-z0-9][a-z0-9-]*", value):
+            raise ValueError("slug must contain lowercase letters, numbers, and hyphens")
+        return value
+
+    @field_validator("profiles")
+    @classmethod
+    def unique_profiles(cls, values: list[str]) -> list[str]:
+        if len(values) != len(set(values)):
+            raise ValueError("company profiles must be unique")
+        if any(len(value) > 40 for value in values):
+            raise ValueError("company profile names must be 40 characters or fewer")
+        return values
+
+    @model_validator(mode="after")
+    def validate_ats_config(self) -> "CompanyConfig":
+        required = {
+            AtsType.GREENHOUSE: {"board_token"},
+            AtsType.LEVER: {"site"},
+            AtsType.ASHBY: {"board_name"},
+            AtsType.SMARTRECRUITERS: {"company_identifier"},
+            AtsType.WORKDAY: {"endpoint", "site", "detail_base_url"},
+            AtsType.JSONLD: set(),
+        }[self.ats_type]
+        missing = required - set(self.ats_config)
+        if missing:
+            raise ValueError(
+                f"{self.ats_type.value} source is missing config keys: {sorted(missing)}"
+            )
+        return self
+
+
+class RawJob(BaseModel):
+    source_company: str
+    external_job_id: str | None = None
+    title: str
+    location_raw: str = ""
+    description_raw: str = ""
+    posted_at: datetime | None = None
+    url: HttpUrl
+    fetched_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+    @property
+    def canonical_url(self) -> str:
+        parts = urlsplit(str(self.url))
+        return urlunsplit(
+            (parts.scheme.lower(), parts.netloc.lower(), parts.path.rstrip("/"), "", "")
+        )
+
+    @property
+    def stable_external_id(self) -> str:
+        if self.external_job_id:
+            return str(self.external_job_id)
+        basis = "|".join(
+            [
+                self.source_company.lower(),
+                self.title.lower(),
+                self.location_raw.lower(),
+                self.canonical_url,
+            ]
+        )
+        return "fallback-" + hashlib.sha256(basis.encode()).hexdigest()[:24]
+
+    @property
+    def content_hash(self) -> str:
+        normalized = "|".join(
+            [
+                self.title.strip(),
+                self.location_raw.strip(),
+                self.description_raw.strip(),
+                self.canonical_url,
+            ]
+        )
+        return hashlib.sha256(normalized.encode()).hexdigest()
+
+
+class ParsedJob(BaseModel):
+    raw: RawJob
+    seniority: Seniority = Seniority.UNKNOWN
+    remote_type: RemoteType = RemoteType.UNKNOWN
+    job_family: str = "other"
+    tech_keywords: set[str] = Field(default_factory=set)
+    requires_citizenship: bool = False
+    requires_clearance: bool = False
+    visa_support: VisaSupport = VisaSupport.UNKNOWN
+    employment_type: str = "unknown"
+    ambiguities: set[str] = Field(default_factory=set)
+
+
+class ResumeProfile(BaseModel):
+    source_path: str | None = None
+    keywords: list[str] = Field(default_factory=list)
+    skills: list[str] = Field(default_factory=list)
+
+
+class MatchResult(BaseModel):
+    profile: str
+    score: float = Field(ge=0, le=1)
+    eligible: bool
+    tier: str
+    reasons: list[str] = Field(default_factory=list)
+    gaps: list[str] = Field(default_factory=list)
+    filtered_reason: str | None = None
+    used_llm: bool = False
+
+
+@dataclass(frozen=True)
+class MatchedJob:
+    company_name: str
+    job: ParsedJob
+    result: MatchResult
+    first_seen_at: datetime
+    is_new: bool
+    changed: bool

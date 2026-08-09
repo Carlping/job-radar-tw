@@ -1,0 +1,134 @@
+name: Job Radar TW
+
+on:
+  schedule:
+    # Keep this timezone and MONITOR_TIMEZONE below in sync when you customize the schedule.
+    - cron: "17,47 20-22 * * *"
+      timezone: "America/New_York"
+  workflow_dispatch:
+    inputs:
+      run_key:
+        description: "Optional idempotency key for a manual run"
+        required: false
+        type: string
+      backfill:
+        description: "Notify eligible existing matches that have not been sent"
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: job-radar-tw-${{ github.repository }}
+  cancel-in-progress: false
+
+jobs:
+  monitor:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.12"
+
+      - uses: astral-sh/setup-uv@d0d8abe699bfb85fec6de9f7adb5ae17292296ff # v6
+        with:
+          enable-cache: true
+
+      - run: uv sync --frozen --extra llm
+
+      - name: Validate public configuration
+        run: uv run monitor validate-config --strict
+
+      - name: Run scheduled monitor
+        if: github.event_name == 'schedule'
+        shell: bash
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          RESUME_TEXT: ${{ secrets.RESUME_TEXT }}
+          OPENAI_MODEL: ${{ vars.OPENAI_MODEL }}
+          LLM_ENABLED: ${{ vars.LLM_ENABLED || 'false' }}
+          VISA_SPONSORSHIP_REQUIRED: ${{ vars.VISA_SPONSORSHIP_REQUIRED || 'false' }}
+          MONITOR_TIMEZONE: ${{ vars.MONITOR_TIMEZONE || 'America/New_York' }}
+          MONITOR_HOUR: ${{ vars.MONITOR_HOUR || '20' }}
+          SCHEDULE_GRACE_HOURS: ${{ vars.SCHEDULE_GRACE_HOURS || '16' }}
+          IMMEDIATE_NOTIFICATION_MIN_SCORE: ${{ vars.IMMEDIATE_NOTIFICATION_MIN_SCORE || '0.82' }}
+          IMMEDIATE_NOTIFICATION_MAX_SOURCE_AGE_DAYS: ${{ vars.IMMEDIATE_NOTIFICATION_MAX_SOURCE_AGE_DAYS || '21' }}
+          IMMEDIATE_NOTIFICATION_MAX_PER_RUN: ${{ vars.IMMEDIATE_NOTIFICATION_MAX_PER_RUN || '5' }}
+          DAILY_SUMMARY_MAX_MATCHES: ${{ vars.DAILY_SUMMARY_MAX_MATCHES || '15' }}
+        run: |
+          if [[ -n "${RESUME_TEXT:-}" ]]; then
+            resume_file="${RUNNER_TEMP}/resume.md"
+            printf '%s' "$RESUME_TEXT" > "$resume_file"
+            export RESUME_PATH="$resume_file"
+            unset RESUME_TEXT
+          fi
+          timeout --signal=INT --kill-after=30s 45m uv run monitor run --scheduled
+
+      - name: Run manual monitor
+        if: github.event_name == 'workflow_dispatch'
+        shell: bash
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          RESUME_TEXT: ${{ secrets.RESUME_TEXT }}
+          OPENAI_MODEL: ${{ vars.OPENAI_MODEL }}
+          LLM_ENABLED: ${{ vars.LLM_ENABLED || 'false' }}
+          VISA_SPONSORSHIP_REQUIRED: ${{ vars.VISA_SPONSORSHIP_REQUIRED || 'false' }}
+          MONITOR_TIMEZONE: ${{ vars.MONITOR_TIMEZONE || 'America/New_York' }}
+          MONITOR_HOUR: ${{ vars.MONITOR_HOUR || '20' }}
+          SCHEDULE_GRACE_HOURS: ${{ vars.SCHEDULE_GRACE_HOURS || '16' }}
+          IMMEDIATE_NOTIFICATION_MIN_SCORE: ${{ vars.IMMEDIATE_NOTIFICATION_MIN_SCORE || '0.82' }}
+          IMMEDIATE_NOTIFICATION_MAX_SOURCE_AGE_DAYS: ${{ vars.IMMEDIATE_NOTIFICATION_MAX_SOURCE_AGE_DAYS || '21' }}
+          IMMEDIATE_NOTIFICATION_MAX_PER_RUN: ${{ vars.IMMEDIATE_NOTIFICATION_MAX_PER_RUN || '5' }}
+          DAILY_SUMMARY_MAX_MATCHES: ${{ vars.DAILY_SUMMARY_MAX_MATCHES || '15' }}
+          INPUT_RUN_KEY: ${{ inputs.run_key }}
+          INPUT_BACKFILL: ${{ inputs.backfill }}
+        run: |
+          if [[ -n "${RESUME_TEXT:-}" ]]; then
+            resume_file="${RUNNER_TEMP}/resume.md"
+            printf '%s' "$RESUME_TEXT" > "$resume_file"
+            export RESUME_PATH="$resume_file"
+            unset RESUME_TEXT
+          fi
+          args=()
+          if [[ -n "$INPUT_RUN_KEY" ]]; then
+            args+=(--run-key "$INPUT_RUN_KEY")
+          else
+            args+=(--run-key "manual-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}")
+          fi
+          if [[ "$INPUT_BACKFILL" == "true" ]]; then
+            args+=(--backfill)
+          fi
+          timeout --signal=INT --kill-after=30s 45m uv run monitor run "${args[@]}"
+
+      - name: Notify Telegram on workflow failure
+        if: failure()
+        shell: bash
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          if [[ -z "${TELEGRAM_BOT_TOKEN}" || -z "${TELEGRAM_CHAT_ID}" ]]; then
+            echo "Telegram secrets not configured; skipping failure notification."
+            exit 0
+          fi
+          text=$'🚨 Job Radar TW GitHub Actions failed\n'
+          text+="Run: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+          curl --fail --silent --show-error -X POST \
+            "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
+            --data-urlencode "chat_id=${TELEGRAM_CHAT_ID}" \
+            --data-urlencode "text=${text}" \
+            --data-urlencode "disable_web_page_preview=true"

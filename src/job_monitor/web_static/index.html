@@ -1,0 +1,134 @@
+<!doctype html>
+<html lang="zh-Hant">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Job Radar TW｜職缺雷達</title>
+    <link rel="stylesheet" href="/assets/styles.css" />
+  </head>
+  <body>
+    <main class="shell">
+      <header class="topbar">
+        <div>
+          <p class="eyebrow">Job Radar TW</p>
+          <h1>職缺雷達</h1>
+        </div>
+        <div class="range-tabs" aria-label="檢視期間">
+          <button class="tab" data-days="7" type="button">7 天</button>
+          <button class="tab is-active" data-days="30" type="button">30 天</button>
+          <button class="tab" data-days="90" type="button">90 天</button>
+        </div>
+      </header>
+
+      <section class="kpi-grid" aria-label="核心指標">
+        <article class="stat">
+          <span>推薦職缺</span>
+          <strong id="kpi-recommended">0</strong>
+          <small>符合門檻且仍開放</small>
+        </article>
+        <article class="stat">
+          <span>已申請</span>
+          <strong id="kpi-applied">0</strong>
+          <small><b id="kpi-apply-rate">0.0%</b> 推薦到申請</small>
+        </article>
+        <article class="stat">
+          <span>進入面試</span>
+          <strong id="kpi-interviews">0</strong>
+          <small><b id="kpi-interview-rate">0.0%</b> 申請到面試</small>
+        </article>
+        <article class="stat">
+          <span>總轉換率</span>
+          <strong id="kpi-total-rate">0.0%</strong>
+          <small>推薦到面試</small>
+        </article>
+      </section>
+
+      <section class="workspace">
+        <div class="primary">
+          <section class="panel">
+            <div class="panel-head">
+              <h2>流程漏斗</h2>
+              <span id="generated-at">-</span>
+            </div>
+            <div class="funnel" aria-label="推薦、申請、面試漏斗">
+              <div class="funnel-row">
+                <span>推薦</span>
+                <div class="bar"><i id="bar-recommended"></i></div>
+                <b id="bar-recommended-value">0</b>
+              </div>
+              <div class="funnel-row">
+                <span>申請</span>
+                <div class="bar"><i id="bar-applied"></i></div>
+                <b id="bar-applied-value">0</b>
+              </div>
+              <div class="funnel-row">
+                <span>面試</span>
+                <div class="bar"><i id="bar-interviews"></i></div>
+                <b id="bar-interviews-value">0</b>
+              </div>
+            </div>
+          </section>
+
+          <section class="panel">
+            <div class="panel-head">
+              <h2>各產業轉換</h2>
+              <span>申請與面試表現</span>
+            </div>
+            <div id="industry-list" class="metric-list"></div>
+          </section>
+
+          <section class="panel jobs-panel">
+            <div class="panel-head">
+              <h2>職缺列表</h2>
+              <div class="filters">
+                <select id="stage-filter" aria-label="流程狀態">
+                  <option value="">全部狀態</option>
+                  <option value="recommended">推薦</option>
+                  <option value="saved">已儲存</option>
+                  <option value="applied">已申請</option>
+                  <option value="interview">面試</option>
+                  <option value="offer">Offer</option>
+                  <option value="rejected">未錄取</option>
+                </select>
+              </div>
+            </div>
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>職缺</th>
+                    <th>產業</th>
+                    <th>分數</th>
+                    <th>狀態</th>
+                    <th></th>
+                  </tr>
+                </thead>
+                <tbody id="jobs-table"></tbody>
+              </table>
+            </div>
+          </section>
+        </div>
+
+        <aside class="secondary">
+          <section class="panel">
+            <div class="panel-head">
+              <h2>下一步</h2>
+              <span>高分優先</span>
+            </div>
+            <div id="queue-list" class="queue-list"></div>
+          </section>
+
+          <section class="panel">
+            <div class="panel-head">
+              <h2>來源表現</h2>
+              <span>ATS / 官網</span>
+            </div>
+            <div id="source-list" class="metric-list compact"></div>
+          </section>
+        </aside>
+      </section>
+    </main>
+
+    <script src="/assets/app.js"></script>
+  </body>
+</html>

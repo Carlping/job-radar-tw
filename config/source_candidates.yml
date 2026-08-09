@@ -1,0 +1,42 @@
+# Candidate source queue for future onboarding.
+# These entries are intentionally not monitored until an official ATS/API endpoint is found
+# and `monitor sources verify --company <slug> --promote` succeeds.
+candidates:
+  # TSMC Arizona / Phoenix semiconductor ecosystem and likely vendor radar.
+  - {slug: asml, name: ASML, category: tsmc_vendor_phoenix, priority: 1, careers_url: "https://www.asml.com/en/careers", suspected_ats: workday, rationale: "Critical semiconductor equipment vendor; high relevance to fabs and process/manufacturing data roles."}
+  - {slug: tokyo-electron, name: Tokyo Electron, category: tsmc_vendor_phoenix, priority: 1, careers_url: "https://www.tel.com/careers/", suspected_ats: unknown, rationale: "Semiconductor equipment vendor; likely Phoenix ecosystem overlap."}
+  - {slug: asm, name: ASM, category: tsmc_vendor_phoenix, priority: 1, careers_url: "https://www.asm.com/careers", suspected_ats: workday, rationale: "Deposition equipment vendor; relevant semiconductor operations and analytics roles."}
+  - {slug: edwards-vacuum, name: Edwards Vacuum, category: tsmc_vendor_phoenix, priority: 1, careers_url: "https://www.edwardsvacuum.com/en/careers", suspected_ats: unknown, rationale: "Vacuum equipment supplier; useful for TSMC supplier ecosystem coverage."}
+  - {slug: air-liquide, name: Air Liquide, category: tsmc_vendor_phoenix, priority: 1, careers_url: "https://careers.airliquide.com/", suspected_ats: unknown, rationale: "Industrial gas supplier with semiconductor relevance."}
+  - {slug: linde, name: Linde, category: tsmc_vendor_phoenix, priority: 1, careers_url: "https://www.lindecareers.com/", suspected_ats: unknown, rationale: "Industrial gas supplier with semiconductor relevance."}
+  - {slug: emd-electronics, name: EMD Electronics, category: tsmc_vendor_phoenix, priority: 1, careers_url: "https://www.emdgroup.com/en/careers.html", suspected_ats: workday, rationale: "Materials supplier for semiconductor manufacturing."}
+  - {slug: ultra-clean-technology, name: Ultra Clean Technology, category: tsmc_vendor_phoenix, priority: 1, careers_url: "https://www.uct.com/careers/", suspected_ats: unknown, rationale: "Semiconductor subsystem and services vendor."}
+  - {slug: jabil, name: Jabil, category: tsmc_vendor_phoenix, priority: 2, careers_url: "https://www.jabil.com/careers.html", suspected_ats: workday, rationale: "Manufacturing services and supply-chain data roles."}
+  - {slug: benchmark-electronics, name: Benchmark Electronics, category: tsmc_vendor_phoenix, priority: 2, careers_url: "https://www.bench.com/careers", suspected_ats: unknown, rationale: "Arizona-based manufacturing services; possible semiconductor/vendor data roles."}
+
+  # Policy, think-tank, and research organizations with data/analytics roles.
+  - {slug: rand, name: RAND Corporation, category: think_tank_policy_data, priority: 1, careers_url: "https://www.rand.org/jobs.html", suspected_ats: unknown, rationale: "Research/data roles in DC, Boston, LA, and remote-adjacent policy contexts."}
+  - {slug: urban-institute, name: Urban Institute, category: think_tank_policy_data, priority: 1, careers_url: "https://www.urban.org/about/careers", suspected_ats: greenhouse, rationale: "Policy research and data science roles in DC."}
+  - {slug: brookings, name: Brookings Institution, category: think_tank_policy_data, priority: 1, careers_url: "https://www.brookings.edu/careers/", suspected_ats: unknown, rationale: "DC policy research and analytics roles."}
+  - {slug: pew, name: Pew Charitable Trusts, category: think_tank_policy_data, priority: 1, careers_url: "https://www.pewtrusts.org/en/about/careers", suspected_ats: unknown, rationale: "Policy, research, and data roles in DC/Philadelphia."}
+  - {slug: csis, name: Center for Strategic and International Studies, category: think_tank_policy_data, priority: 2, careers_url: "https://www.csis.org/about-us/careers", suspected_ats: unknown, rationale: "DC policy roles; screen for citizenship requirements."}
+  - {slug: mathematica, name: Mathematica, category: think_tank_policy_data, priority: 1, careers_url: "https://www.mathematica.org/career-opportunities", suspected_ats: unknown, rationale: "Healthcare/public policy data and analytics roles."}
+  - {slug: mdrc, name: MDRC, category: think_tank_policy_data, priority: 2, careers_url: "https://www.mdrc.org/careers", suspected_ats: unknown, rationale: "Policy evaluation and data roles."}
+  - {slug: migration-policy-institute, name: Migration Policy Institute, category: think_tank_policy_data, priority: 2, careers_url: "https://www.migrationpolicy.org/about/careers", suspected_ats: unknown, rationale: "Policy research roles; may fit immigration/public data interests."}
+
+  # Taiwan-linked companies with US or global analytics/data roles.
+  - {slug: mediatek, name: MediaTek, category: taiwan_linked_companies, priority: 1, careers_url: "https://corp.mediatek.com/careers", suspected_ats: unknown, rationale: "Taiwan semiconductor company with US roles."}
+  - {slug: umc, name: United Microelectronics Corporation, category: taiwan_linked_companies, priority: 2, careers_url: "https://www.umc.com/en/Careers", suspected_ats: unknown, rationale: "Taiwan semiconductor manufacturer; possible US roles."}
+  - {slug: delta-electronics, name: Delta Electronics, category: taiwan_linked_companies, priority: 2, careers_url: "https://www.deltaww.com/en-US/careers", suspected_ats: unknown, rationale: "Taiwan electronics and energy company; US operations roles."}
+  - {slug: foxconn, name: Foxconn, category: taiwan_linked_companies, priority: 2, careers_url: "https://www.foxconn.com/en-us/careers", suspected_ats: unknown, rationale: "Taiwan manufacturing ecosystem; US operations/data roles."}
+  - {slug: trend-micro, name: Trend Micro, category: taiwan_linked_companies, priority: 2, careers_url: "https://www.trendmicro.com/en_us/about/careers.html", suspected_ats: workday, rationale: "Taiwan-founded cybersecurity company; data and analytics adjacent roles."}
+  - {slug: appier, name: Appier, category: taiwan_linked_companies, priority: 2, careers_url: "https://www.appier.com/en/careers", suspected_ats: greenhouse, rationale: "Taiwan AI/SaaS company with analytics and data science relevance."}
+  - {slug: advantech, name: Advantech, category: taiwan_linked_companies, priority: 2, careers_url: "https://www.advantech.com/en/careers", suspected_ats: unknown, rationale: "Taiwan industrial computing company; IoT and operations data roles."}
+
+  # City and regional public-sector data teams in preferred locations.
+  - {slug: nyc-jobs, name: City of New York, category: public_sector_data, priority: 1, careers_url: "https://cityjobs.nyc.gov/", suspected_ats: custom, rationale: "NYC data, analytics, digital services, and policy operations roles."}
+  - {slug: dc-government, name: Government of the District of Columbia, category: public_sector_data, priority: 1, careers_url: "https://careers.dc.gov/", suspected_ats: oracle, rationale: "DC data and public-sector analytics roles."}
+  - {slug: massachusetts-state, name: Commonwealth of Massachusetts, category: public_sector_data, priority: 2, careers_url: "https://massanf.taleo.net/careersection/ex/jobsearch.ftl", suspected_ats: taleo, rationale: "Boston-area public-sector data roles."}
+  - {slug: los-angeles-city, name: City of Los Angeles, category: public_sector_data, priority: 2, careers_url: "https://www.governmentjobs.com/careers/lacity", suspected_ats: governmentjobs, rationale: "LA public-sector data roles."}
+  - {slug: san-diego-county, name: County of San Diego, category: public_sector_data, priority: 2, careers_url: "https://www.governmentjobs.com/careers/sdcounty", suspected_ats: governmentjobs, rationale: "San Diego public-sector analytics roles."}
+  - {slug: king-county, name: King County, category: public_sector_data, priority: 2, careers_url: "https://www.governmentjobs.com/careers/kingcounty", suspected_ats: governmentjobs, rationale: "Seattle-area public data and analytics roles."}

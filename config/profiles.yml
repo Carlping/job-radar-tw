@@ -1,0 +1,32 @@
+profiles:
+  - name: healthcare
+    version: "1.0"
+    threshold: 0.60
+    strong_threshold: 0.78
+    weights: {domain: 0.30, title: 0.25, skills: 0.20, location: 0.15, seniority: 0.10}
+    title_terms: [data analyst, data analytics, healthcare analyst, healthcare data analyst, payer data analyst, actuarial analyst, value-based care, population health, medical economics, claims data analyst, risk adjustment, analytics engineer]
+    domain_terms: [medicaid, claims, utilization, payer, value-based care, population health, medical economics, hedis, stars, cms, eligibility, pharmacy]
+    skills: [sql, python, tableau, power bi, dbt, gcp, aws]
+    gap_terms:
+      formal HEDIS experience: [hedis certification, certified hedis]
+      Epic Clarity/Caboodle: [epic clarity, caboodle]
+
+  - name: semiconductor
+    version: "1.0"
+    threshold: 0.60
+    strong_threshold: 0.78
+    weights: {domain: 0.30, title: 0.25, skills: 0.20, location: 0.15, seniority: 0.10}
+    title_terms: [data analyst, senior data analyst, analytics engineer, business intelligence, data scientist, operations analyst, yield analyst]
+    domain_terms: [semiconductor, wafer, fab, manufacturing, yield, operations, supply chain, process control, equipment]
+    skills: [sql, python, tableau, power bi, dbt, gcp, aws]
+    gap_terms: {}
+
+  - name: tech
+    version: "1.0"
+    threshold: 0.60
+    strong_threshold: 0.78
+    weights: {title: 0.30, skills: 0.30, location: 0.20, domain: 0.10, seniority: 0.10}
+    title_terms: [data analyst, senior data analyst, analytics engineer, business intelligence, bi developer, data scientist, product analyst, operations analyst]
+    domain_terms: [cloud, platform, product analytics, data platform, artificial intelligence, machine learning, infrastructure, marketplace]
+    skills: [sql, python, tableau, power bi, dbt, gcp, aws]
+    gap_terms: {}

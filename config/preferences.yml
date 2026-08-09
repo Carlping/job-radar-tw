@@ -1,0 +1,13 @@
+# Matching preferences used by every profile. Location matching is case-insensitive.
+# An empty location_terms list accepts any non-remote location.
+preferences:
+  location_terms:
+    - New York
+    - San Francisco
+    - Austin
+  include_remote: true
+  exclude_citizenship_required: true
+  exclude_clearance_required: true
+  excluded_seniorities:
+    - entry
+    - director_plus

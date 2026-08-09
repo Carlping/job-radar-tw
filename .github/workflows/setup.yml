@@ -1,0 +1,47 @@
+name: Setup Job Radar TW
+
+on:
+  workflow_dispatch:
+    inputs:
+      send_test_message:
+        description: "Send a Telegram message after checking the database"
+        required: false
+        default: true
+        type: boolean
+
+permissions:
+  contents: read
+
+jobs:
+  setup:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.12"
+      - uses: astral-sh/setup-uv@d0d8abe699bfb85fec6de9f7adb5ae17292296ff # v6
+        with:
+          enable-cache: true
+      - run: uv sync --frozen
+      - run: uv run monitor validate-config --strict
+      - name: Initialize the database safely
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: uv run monitor init-db
+      - name: Check database and Telegram
+        shell: bash
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          SEND_TEST_MESSAGE: ${{ inputs.send_test_message }}
+        run: |
+          args=()
+          if [[ "$SEND_TEST_MESSAGE" == "true" ]]; then
+            args+=(--send-telegram)
+          fi
+          uv run monitor doctor "${args[@]}"

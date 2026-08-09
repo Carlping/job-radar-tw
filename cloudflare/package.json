@@ -1,0 +1,16 @@
+{
+  "name": "job-radar-tw-cloudflare",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "node build.js",
+    "dev": "npm run build && npx wrangler pages dev public",
+    "deploy": "npm run build && npx wrangler pages deploy public"
+  },
+  "devDependencies": {
+    "wrangler": "^4.0.0"
+  },
+  "dependencies": {
+    "@cloudflare/pages-plugin-cloudflare-access": "^1.0.5"
+  }
+}
