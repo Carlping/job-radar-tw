@@ -19,6 +19,7 @@
 - `config/companies.yml` 保存公司、ATS 類型、endpoint、啟用狀態與使用的 profiles。
 - `config/profiles.yml` 保存一組或多組匹配 profile 的關鍵字、權重與門檻。名稱由設定檔決定，每組權重總和必須為 `1.0`。
 - `config/preferences.yml` 保存地點、remote、citizenship／clearance 與 seniority 偏好。
+- `config/candidate.yml`（選用）保存候選人的年資、職級、學位與帶人經驗；未設定時不套用職級／經驗合理性檢查。
 - `RESUME_TEXT` secret 或本機純文字／Markdown 履歷可補充 skills 與 domain terms；沒有履歷時只使用 profile 規則。
 - LLM enrichment 預設關閉。啟用後只處理規則分數落在模糊區間，且 seniority、remote 或身份條件有歧義的職缺；呼叫失敗時回到規則結果。
 
@@ -47,7 +48,7 @@
 
 ## 匹配與通知
 
-每家公司可指定一或多個 profiles。規則評分會考慮 title、domain、skills、location 與 seniority；profile 的 `threshold` 決定是否符合，`strong_threshold` 決定是否為強匹配。
+每家公司可指定一或多個 profiles。規則評分會考慮 title、domain、skills、location 與 seniority；profile 的 `threshold` 決定是否符合，`strong_threshold` 決定是否為強匹配。啟用 candidate profile 後，職缺另分為 target、stretch 與 unrealistic，且逐筆即時通知只發送 target。
 
 一般 run 的 Daily Summary 會列出本次新建或內容變更後仍符合門檻的職缺；backfill 會列出本次重新檢查的符合項目。一般逐筆通知另外要求：
 

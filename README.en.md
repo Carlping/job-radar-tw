@@ -35,8 +35,11 @@ Start with these files:
 - `config/preferences.yml` controls locations, remote work, citizenship or clearance exclusions, and excluded seniority levels.
 - `config/companies.yml` lists the companies and official ATS endpoints to monitor. Keep at least one company set to `enabled: true`.
 - `config/profiles.yml` defines target titles, domains, skills, scoring weights, and notification thresholds. Each profile name must match the names referenced by `companies.yml`.
+- `config/candidate.yml` is optional and describes your experience, current level, degree, and people-management background. When absent, no level or experience reasonableness check is applied; see `config/candidate.example.yml`.
 
 You can edit and commit these files in GitHub. The `weights` in each profile must add up to `1.0`. Set `source_verified: true` only after the endpoint has completed a real fetch successfully.
+
+With a candidate profile, matches are bucketed as target (good fit), stretch (above your current level), or unrealistic. Immediate Telegram notifications require the target bucket.
 
 Resume matching is optional. Use `config/resume.example.md` as a format reference, then save your own plain-text or Markdown resume as the repository secret `RESUME_TEXT`. Do not commit a resume containing your name, phone number, address, or other personal data. For local use, you may instead set `RESUME_PATH` in `.env`.
 

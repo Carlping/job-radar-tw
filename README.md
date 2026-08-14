@@ -35,8 +35,11 @@ Fork 完成後，先到 **Actions** 分頁啟用 workflows。[GitHub 預設不�
 - `config/preferences.yml`：地點、是否接受 remote、citizenship／clearance 與 seniority 排除條件。
 - `config/companies.yml`：要監控的公司與官方 ATS endpoint；至少保留一家公司 `enabled: true`。
 - `config/profiles.yml`：職稱、領域、技能、權重與通知門檻。Profile 名稱可自行決定，但必須和 `companies.yml` 裡的 `profiles` 對上。
+- `config/candidate.yml`（選用）：你的年資、目前職級、學位與帶人經驗。未建立時不套用職級／經驗合理性檢查；可參考 `config/candidate.example.yml`。
 
 可以直接用 GitHub 的檔案編輯器修改並 commit。`profiles.yml` 的每組 `weights` 加總必須是 `1.0`。`source_verified` 代表 endpoint 已經實際抓取成功，不要只因為想監控該公司就改成 `true`。
+
+啟用 candidate profile 後，職缺會分為 target（相符）、stretch（高於目前職級的挑戰）與 unrealistic（不合理）。Telegram 逐筆即時通知只會發送 target。
 
 履歷比對是選用功能。最安全的做法是參考 `config/resume.example.md`，把自己的純文字／Markdown 內容存成 repository secret `RESUME_TEXT`，不要提交含姓名、電話或地址的履歷。本機使用者也可以建立自己的檔案，再於 `.env` 設定 `RESUME_PATH`。
 

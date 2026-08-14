@@ -35,6 +35,31 @@ class Seniority(StrEnum):
     UNKNOWN = "unknown"
 
 
+class JobLevel(StrEnum):
+    UNKNOWN = "unknown"
+    ENTRY = "entry"
+    MID = "mid"
+    SENIOR = "senior"
+    LEAD = "lead"
+    STAFF = "staff"
+    PRINCIPAL = "principal"
+    DIRECTOR_PLUS = "director_plus"
+
+
+class DegreeLevel(StrEnum):
+    NONE = "none"
+    BACHELOR = "bachelor"
+    MASTER = "master"
+    PHD = "phd"
+
+
+class CompanyScale(StrEnum):
+    SMALL = "small"
+    MID = "mid"
+    LARGE = "large"
+    BIGTECH = "bigtech"
+
+
 class RemoteType(StrEnum):
     ONSITE = "onsite"
     HYBRID = "hybrid"
@@ -150,6 +175,7 @@ class RawJob(BaseModel):
 class ParsedJob(BaseModel):
     raw: RawJob
     seniority: Seniority = Seniority.UNKNOWN
+    level: JobLevel = JobLevel.UNKNOWN
     remote_type: RemoteType = RemoteType.UNKNOWN
     job_family: str = "other"
     tech_keywords: set[str] = Field(default_factory=set)
@@ -157,6 +183,9 @@ class ParsedJob(BaseModel):
     requires_clearance: bool = False
     visa_support: VisaSupport = VisaSupport.UNKNOWN
     employment_type: str = "unknown"
+    required_years_min: int | None = None
+    degree_required: DegreeLevel = DegreeLevel.NONE
+    people_management: bool = False
     ambiguities: set[str] = Field(default_factory=set)
 
 
@@ -175,6 +204,29 @@ class MatchResult(BaseModel):
     gaps: list[str] = Field(default_factory=list)
     filtered_reason: str | None = None
     used_llm: bool = False
+    fit: float = 0.0
+    reach: float = 1.0
+    bucket: str = "target"
+    level: str | None = None
+    required_years_min: int | None = None
+
+
+class CandidateProfile(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    years_experience: int = Field(ge=0)
+    current_level: JobLevel
+    company_scale: CompanyScale | None = None
+    has_advanced_degree: DegreeLevel = DegreeLevel.NONE
+    people_managed: int = Field(default=0, ge=0)
+    max_level_reach: int = Field(default=1, ge=0)
+
+    @field_validator("current_level")
+    @classmethod
+    def current_level_is_known(cls, value: JobLevel) -> JobLevel:
+        if value == JobLevel.UNKNOWN:
+            raise ValueError("current_level must not be unknown")
+        return value
 
 
 @dataclass(frozen=True)
