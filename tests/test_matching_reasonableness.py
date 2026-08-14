@@ -4,8 +4,16 @@ from pathlib import Path
 import pytest
 
 from job_monitor.config import SearchPreferences, Settings, load_profiles
-from job_monitor.matching import match_job, parse_job
-from job_monitor.models import CandidateProfile, DegreeLevel, JobLevel, RawJob, Seniority
+from job_monitor.matching import _level_fit, _years_fit, match_job, parse_job
+from job_monitor.models import (
+    CandidateProfile,
+    DegreeLevel,
+    JobLevel,
+    MatchResult,
+    RawJob,
+    Seniority,
+)
+from job_monitor.notifier import render_job_message
 from job_monitor.pipeline import _qualifies_for_immediate_notification
 
 PROFILES = load_profiles(Path("config/profiles.yml"))
@@ -63,7 +71,7 @@ def test_requirement_extraction():
 
 
 def candidate(**updates) -> CandidateProfile:
-    values = {"years_experience": 7, "current_level": JobLevel.SENIOR, "max_level_reach": 2}
+    values = {"years_experience": 7, "current_level": JobLevel.SENIOR}
     values.update(updates)
     return CandidateProfile(**values)
 
@@ -71,7 +79,10 @@ def candidate(**updates) -> CandidateProfile:
 def test_reach_buckets_and_filters():
     profile = PROFILES["tech"]
     target = match_job(
-        parse_job(raw("Data Scientist")), profile, PREFERENCES, candidate=candidate()
+        parse_job(raw("Data Scientist", "8+ years of experience")),
+        profile,
+        PREFERENCES,
+        candidate=candidate(),
     )
     stretch = match_job(
         parse_job(raw("Staff Data Scientist", "8+ years of experience")),
@@ -97,6 +108,53 @@ def test_reach_buckets_and_filters():
         ).filtered_reason
         == "level_reach"
     )
+    unrealistic = match_job(
+        parse_job(raw("Staff Data Scientist", "20 years of experience")),
+        profile,
+        PREFERENCES,
+        candidate=candidate(),
+    )
+    assert unrealistic.filtered_reason == "reach"
+
+
+def test_level_fit_boundaries_and_unknown():
+    current = candidate()
+    assert _level_fit(parse_job(raw("Data Scientist")), current)[0] == 0.925
+    assert _level_fit(parse_job(raw("Senior Data Scientist")), current)[0] == 1.0
+    assert _level_fit(parse_job(raw("Staff Data Scientist")), current)[0] == 0.55
+    assert _level_fit(parse_job(raw("Principal Data Scientist")), current)[0] == pytest.approx(0.1)
+    assert _level_fit(parse_job(raw("Mystery Role")), current)[0] == 0.7
+
+
+def test_years_fit_boundaries():
+    current = candidate()
+    assert _years_fit(parse_job(raw("Data Scientist")), current) == 1.0
+    assert _years_fit(parse_job(raw("Data Scientist", "7 years of experience")), current) == 1.0
+    assert _years_fit(
+        parse_job(raw("Data Scientist", "8 years of experience")), current
+    ) == pytest.approx(0.82)
+    assert _years_fit(parse_job(raw("Data Scientist", "20 years of experience")), current) == 0.0
+
+
+def test_ndx_company_scale_adjustment_changes_reach():
+    profile = PROFILES["tech"]
+    regular = match_job(
+        parse_job(raw("Staff Data Scientist")),
+        profile,
+        PREFERENCES,
+        candidate=candidate(),
+    )
+    adjusted = match_job(
+        parse_job(raw("Staff Data Scientist")),
+        profile,
+        PREFERENCES,
+        candidate=candidate(company_scale="small"),
+        company_ndx_member=True,
+    )
+    assert regular.reach == 0.55
+    assert adjusted.reach == 0.325
+    assert regular.bucket == "stretch"
+    assert adjusted.filtered_reason == "reach"
 
 
 def test_penalty_and_legacy_score_without_candidate():
@@ -104,9 +162,45 @@ def test_penalty_and_legacy_score_without_candidate():
     profile = PROFILES["tech"]
     legacy = match_job(parsed, profile, PREFERENCES)
     candidate_result = match_job(parsed, profile, PREFERENCES, candidate=candidate())
-    assert legacy.fit == 0
+    assert legacy.fit == 0.556
     assert candidate_result.score < legacy.score
     assert candidate_result.bucket == "target"
+
+
+def test_penalty_is_capped_at_half():
+    unpenalized = match_job(
+        parse_job(raw("Data Scientist")),
+        PROFILES["tech"],
+        PREFERENCES,
+        candidate=candidate(),
+    )
+    result = match_job(
+        parse_job(raw("Data Scientist", "PhD required. Manage a team.")),
+        PROFILES["tech"],
+        PREFERENCES,
+        candidate=candidate(),
+    )
+    assert result.score == 0.356
+    assert result.score >= round(unpenalized.score * 0.5, 3)
+
+
+@pytest.mark.parametrize(
+    ("title", "description", "score", "tier", "eligible"),
+    [
+        ("Data Scientist", "SQL and Python.", 0.72, "match", True),
+        ("Senior Data Analyst", "SQL and Tableau.", 0.72, "match", True),
+        ("Data Scientist", "Cloud, SQL, Python, and machine learning.", 0.787, "strong", True),
+    ],
+)
+def test_legacy_scores_are_unchanged_without_candidate(title, description, score, tier, eligible):
+    result = match_job(
+        parse_job(raw(title, description)),
+        PROFILES["tech"],
+        PREFERENCES,
+    )
+    assert result.score == score
+    assert result.tier == tier
+    assert result.eligible is eligible
 
 
 def test_stretch_is_not_immediate():
@@ -119,3 +213,18 @@ def test_stretch_is_not_immediate():
     assert not _qualifies_for_immediate_notification(
         parse_job(raw("Staff Data Scientist")), result, datetime.now(UTC), Settings(), is_new=True
     )
+
+
+def test_stretch_message_uses_challenge_badge():
+    result = MatchResult(
+        profile="tech",
+        score=0.7,
+        eligible=True,
+        tier="strong",
+        bucket="stretch",
+    )
+    message = render_job_message(
+        "Acme", parse_job(raw("Staff Data Scientist")), result, datetime.now(UTC)
+    )
+    assert "🪜 延伸挑戰" in message
+    assert "🔥 強烈推薦" not in message

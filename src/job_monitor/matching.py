@@ -245,15 +245,20 @@ def _term_score(text: str, terms: list[str], target_hits: int = 5) -> tuple[floa
     return min(1.0, len(hits) / max(1, min(target_hits, len(terms)))), hits
 
 
-def _level_fit(job: ParsedJob, candidate: CandidateProfile) -> tuple[float, int]:
+def _level_fit(
+    job: ParsedJob, candidate: CandidateProfile, company_ndx_member: bool = False
+) -> tuple[float, int]:
     if job.level == JobLevel.UNKNOWN:
         return 0.7, 0
     gap = LEVEL_RANK[job.level] - LEVEL_RANK[candidate.current_level]
+    adjusted_gap = gap
+    if candidate.company_scale == "small" and company_ndx_member and gap > 0:
+        adjusted_gap += 0.5
     if gap == 0:
         return 1.0, gap
-    if gap > 0:
-        return max(0.0, 1 - 0.45 * gap), gap
-    return max(0.5, 1 + 0.15 * gap), gap
+    if adjusted_gap > 0:
+        return max(0.0, 1 - 0.45 * adjusted_gap), gap
+    return max(0.85, 1 + 0.075 * adjusted_gap), gap
 
 
 def _years_fit(job: ParsedJob, candidate: CandidateProfile) -> float:
@@ -328,18 +333,7 @@ def match_job(
     fit = 0.0
     reach = 1.0
     if candidate:
-        level_fit, raw_gap = _level_fit(job, candidate)
-        gap = raw_gap
-        if candidate.company_scale == "small" and company_ndx_member and gap > 0:
-            gap += 0.5
-        if job.level == JobLevel.UNKNOWN:
-            level_fit = 0.7
-        elif gap == 0:
-            level_fit = 1.0
-        elif gap > 0:
-            level_fit = max(0.0, 1 - 0.45 * gap)
-        else:
-            level_fit = max(0.5, 1 + 0.15 * gap)
+        level_fit, raw_gap = _level_fit(job, candidate, company_ndx_member)
         years_fit = _years_fit(job, candidate)
         reach = round(level_fit * years_fit, 3)
         bucket = "target" if reach >= 0.7 else "stretch" if reach >= 0.35 else "unrealistic"
@@ -407,16 +401,15 @@ def match_job(
     score = round(
         sum(dimensions.get(key, 0) * weight for key, weight in profile.weights.items()), 3
     )
-    if candidate:
-        fit_weights = {
-            key: profile.weights.get(key, 0.0) for key in ("title", "domain", "skills", "location")
-        }
-        fit_weight_total = sum(fit_weights.values())
-        fit = (
-            sum(dimensions[key] * weight for key, weight in fit_weights.items()) / fit_weight_total
-            if fit_weight_total
-            else 0.0
-        )
+    fit_weights = {
+        key: profile.weights.get(key, 0.0) for key in ("title", "domain", "skills", "location")
+    }
+    fit_weight_total = sum(fit_weights.values())
+    fit = (
+        sum(dimensions[key] * weight for key, weight in fit_weights.items()) / fit_weight_total
+        if fit_weight_total
+        else 0.0
+    )
     reasons = [f"{key}: {value:.0%}" for key, value in dimensions.items() if value >= 0.5]
     if resume_hits:
         reasons.append("resume: " + ", ".join(sorted(resume_hits)[:5]))
