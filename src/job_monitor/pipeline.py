@@ -7,7 +7,7 @@ from datetime import UTC, datetime
 
 import httpx
 
-from .config import CandidateProfile, ProfileConfig, SearchPreferences, Settings, load_candidate
+from .config import CandidateProfile, ProfileConfig, SearchPreferences, Settings
 from .llm import LLMEnricher
 from .matching import match_job, parse_job
 from .models import CompanyConfig, MatchedJob, MatchResult, ParsedJob, RawJob
@@ -146,7 +146,6 @@ async def run_pipeline(
         settings.resume_path,
         settings.resume_text.get_secret_value() if settings.resume_text else None,
     )
-    candidate = candidate if candidate is not None else load_candidate(settings.candidate_config)
     storage = None if dry_run else Storage(settings.database_url or "", create_schema=False)
     run_id = "dry-run"
     if storage:

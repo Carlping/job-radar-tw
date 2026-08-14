@@ -1,7 +1,13 @@
 candidate:
+  # Non-negative years of professional experience.
   years_experience: 7
+  # One of: entry, mid, senior, lead, staff, principal, director_plus.
   current_level: senior
+  # Optional: small, mid, large, or bigtech.
   company_scale: small
+  # One of: none, master, or phd.
   has_advanced_degree: none
+  # Number of people managed directly.
   people_managed: 0
+  # Maximum number of levels above current_level to consider.
   max_level_reach: 1

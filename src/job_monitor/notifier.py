@@ -42,9 +42,11 @@ def render_freshness(
 def render_job_message(
     company_name: str, job: ParsedJob, result: MatchResult, first_seen_at: datetime
 ) -> str:
-    badge = "🔥 強烈推薦" if result.tier == "strong" else "✅ 符合"
-    if result.bucket == "stretch":
-        badge = "🪜 " + badge
+    badge = (
+        "🪜 延伸挑戰"
+        if result.bucket == "stretch"
+        else ("🔥 強烈推薦" if result.tier == "strong" else "✅ 符合")
+    )
     reasons = "、".join(result.reasons) or "規則配對"
     gaps = "、".join(result.gaps) or "無明顯缺口"
     freshness = render_freshness(job.raw.posted_at, first_seen_at)
