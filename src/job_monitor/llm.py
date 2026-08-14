@@ -5,6 +5,7 @@ from typing import Any
 
 from pydantic import BaseModel
 
+from .matching import LEVEL_BY_SENIORITY
 from .models import ParsedJob, RemoteType, Seniority
 
 
@@ -51,6 +52,7 @@ class LLMEnricher:
         )
         fields = LLMFields.model_validate(json.loads(response.output_text))
         job.seniority = fields.seniority
+        job.level = LEVEL_BY_SENIORITY[fields.seniority]
         job.remote_type = fields.remote_type
         job.requires_citizenship = fields.requires_citizenship
         job.requires_clearance = fields.requires_clearance

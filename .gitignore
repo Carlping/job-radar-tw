@@ -23,4 +23,5 @@ node_modules/
 config/resume.md
 config/resume.*
 !config/resume.example.md
+config/candidate.yml
 cloudflare/public/
