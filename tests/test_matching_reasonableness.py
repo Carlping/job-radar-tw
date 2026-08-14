@@ -1,9 +1,12 @@
+import json
 from datetime import UTC, datetime
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
 from job_monitor.config import SearchPreferences, Settings, load_profiles
+from job_monitor.llm import LLMEnricher
 from job_monitor.matching import _level_fit, _years_fit, match_job, parse_job
 from job_monitor.models import (
     CandidateProfile,
@@ -68,6 +71,29 @@ def test_requirement_extraction():
     assert (
         parse_job(raw("Data Scientist", "5-8 years experience required.")).required_years_min == 5
     )
+    assert (
+        parse_job(
+            raw(
+                "Data Scientist",
+                "5+ years of experience required; 10+ years of experience preferred",
+            )
+        ).required_years_min
+        == 5
+    )
+    assert (
+        parse_job(raw("Data Scientist", "Graduated within the last 2 years.")).required_years_min
+        is None
+    )
+
+
+def test_legacy_level_terms_do_not_add_hard_filters():
+    profile = PROFILES["tech"]
+    for title in [
+        "Data Analyst, Office of the Chief Data Officer",
+        "Data Analyst Fellowship Program",
+    ]:
+        result = match_job(parse_job(raw(title)), profile, SearchPreferences())
+        assert result.filtered_reason != "seniority"
 
 
 def candidate(**updates) -> CandidateProfile:
@@ -228,3 +254,36 @@ def test_stretch_message_uses_challenge_badge():
     )
     assert "🪜 延伸挑戰" in message
     assert "🔥 強烈推薦" not in message
+
+
+@pytest.mark.asyncio
+async def test_llm_enrichment_updates_level_and_reach():
+    class FakeResponses:
+        async def create(self, **kwargs):
+            return SimpleNamespace(
+                output_text=json.dumps(
+                    {
+                        "seniority": "lead",
+                        "remote_type": "remote",
+                        "requires_citizenship": False,
+                        "requires_clearance": False,
+                        "domain_terms": [],
+                    }
+                )
+            )
+
+    enricher = object.__new__(LLMEnricher)
+    enricher.client = SimpleNamespace(responses=FakeResponses())
+    enricher.model = "test"
+    job = parse_job(raw("Mystery Data Scientist"))
+    job.level = JobLevel.UNKNOWN
+    job.seniority = Seniority.UNKNOWN
+    before = match_job(job, PROFILES["tech"], PREFERENCES, candidate=candidate())
+
+    enriched = await enricher.enrich(job)
+    after = match_job(enriched, PROFILES["tech"], PREFERENCES, candidate=candidate())
+
+    assert enriched.seniority == Seniority.LEAD
+    assert enriched.level == JobLevel.LEAD
+    assert before.reach == 0.7
+    assert after.reach == 0.55

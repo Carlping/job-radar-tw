@@ -88,6 +88,14 @@ SENIORITY_BY_LEVEL = {
     JobLevel.DIRECTOR_PLUS: Seniority.DIRECTOR,
     JobLevel.UNKNOWN: Seniority.UNKNOWN,
 }
+LEVEL_BY_SENIORITY = {
+    Seniority.ENTRY: JobLevel.ENTRY,
+    Seniority.MID: JobLevel.MID,
+    Seniority.SENIOR: JobLevel.SENIOR,
+    Seniority.LEAD: JobLevel.LEAD,
+    Seniority.DIRECTOR: JobLevel.DIRECTOR_PLUS,
+    Seniority.UNKNOWN: JobLevel.UNKNOWN,
+}
 
 
 def _contains(text: str, terms: list[str]) -> bool:
@@ -106,9 +114,9 @@ def _requires_citizenship(text: str) -> bool:
 def _detect_level(title: str) -> JobLevel:
     if _contains(title, ["intern", "entry level", "junior", "associate analyst"]):
         return JobLevel.ENTRY
-    if _contains(title, ["director", "vice president", "vp ", "head of", "chief"]):
+    if _contains(title, ["director", "vice president", "vp ", "head of"]):
         return JobLevel.DIRECTOR_PLUS
-    if _contains(title, ["principal", "distinguished", "fellow"]):
+    if _contains(title, ["principal"]):
         return JobLevel.PRINCIPAL
     if _contains(title, ["staff"]):
         return JobLevel.STAFF
@@ -123,15 +131,24 @@ def _detect_level(title: str) -> JobLevel:
 
 def _extract_required_years(text: str) -> int | None:
     matches: list[int] = []
-    for match in re.finditer(r"\b(\d{1,2})(?:\s*-\s*\d{1,2})?\s*\+?\s*years?\b", text, re.I):
-        value = int(match.group(1))
-        if value > 20:
+    optional_markers = ["preferred", "nice to have", "or equivalent", "a plus"]
+    for sentence in re.split(r"(?<=[.!?;])\s+", text):
+        lower = sentence.lower()
+        if any(marker in lower for marker in optional_markers):
             continue
-        before = text[max(0, match.start() - 40) : match.start()].lower()
-        after = text[match.end() : match.end() + 40].lower()
-        if "experience" in after or any(term in before for term in ["minimum", "at least", "with"]):
-            matches.append(value)
-    return max(matches) if matches else None
+        for match in re.finditer(
+            r"\b(\d{1,2})(?:\s*-\s*\d{1,2})?\s*\+?\s*years?\b", sentence, re.I
+        ):
+            value = int(match.group(1))
+            if value > 20:
+                continue
+            before = sentence[max(0, match.start() - 40) : match.start()]
+            after = sentence[match.end() : match.end() + 40]
+            if re.search(r"\bexperience\b", after, re.I) or re.search(
+                r"\b(minimum|at least|with)\b", before, re.I
+            ):
+                matches.append(value)
+    return min(matches) if matches else None
 
 
 def _extract_degree_required(text: str) -> DegreeLevel:
