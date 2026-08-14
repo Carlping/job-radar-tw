@@ -7,7 +7,7 @@ from datetime import UTC, datetime
 
 import httpx
 
-from .config import ProfileConfig, SearchPreferences, Settings
+from .config import CandidateProfile, ProfileConfig, SearchPreferences, Settings, load_candidate
 from .llm import LLMEnricher
 from .matching import match_job, parse_job
 from .models import CompanyConfig, MatchedJob, MatchResult, ParsedJob, RawJob
@@ -101,6 +101,8 @@ def _qualifies_for_immediate_notification(
     is_new: bool,
     backfill: bool = False,
 ) -> bool:
+    if result.bucket != "target":
+        return False
     if backfill:
         return True
     if not is_new:
@@ -130,6 +132,7 @@ async def run_pipeline(
     companies: list[CompanyConfig],
     profiles: dict,
     preferences: SearchPreferences,
+    candidate: CandidateProfile | None = None,
     *,
     dry_run: bool = False,
     backfill: bool = False,
@@ -143,6 +146,7 @@ async def run_pipeline(
         settings.resume_path,
         settings.resume_text.get_secret_value() if settings.resume_text else None,
     )
+    candidate = candidate if candidate is not None else load_candidate(settings.candidate_config)
     storage = None if dry_run else Storage(settings.database_url or "", create_schema=False)
     run_id = "dry-run"
     if storage:
@@ -245,6 +249,8 @@ async def run_pipeline(
                             resume,
                             visa_sponsorship_required=settings.visa_sponsorship_required,
                             company_visa_support=company.visa_support,
+                            candidate=candidate,
+                            company_ndx_member=company.ndx_member,
                         )
                         if (
                             0.45 <= result.score < profile.strong_threshold
@@ -260,6 +266,8 @@ async def run_pipeline(
                                     resume,
                                     visa_sponsorship_required=settings.visa_sponsorship_required,
                                     company_visa_support=company.visa_support,
+                                    candidate=candidate,
+                                    company_ndx_member=company.ndx_member,
                                 )
                                 result.used_llm = True
                             except Exception as exc:

@@ -43,6 +43,8 @@ def render_job_message(
     company_name: str, job: ParsedJob, result: MatchResult, first_seen_at: datetime
 ) -> str:
     badge = "🔥 強烈推薦" if result.tier == "strong" else "✅ 符合"
+    if result.bucket == "stretch":
+        badge = "🪜 " + badge
     reasons = "、".join(result.reasons) or "規則配對"
     gaps = "、".join(result.gaps) or "無明顯缺口"
     freshness = render_freshness(job.raw.posted_at, first_seen_at)
@@ -102,10 +104,13 @@ def render_run_summary(
 
     lines.append("")
     if matched_jobs:
-        lines.append("本次符合職缺：")
-        for item in sorted(matched_jobs, key=lambda match: match.result.score, reverse=True)[
-            :max_matches
-        ]:
+        ordered = sorted(matched_jobs, key=lambda match: match.result.score, reverse=True)
+        target_jobs = [item for item in ordered if item.result.bucket == "target"]
+        stretch_jobs = [item for item in ordered if item.result.bucket == "stretch"]
+        shown = 0
+        if target_jobs:
+            lines.append("本次符合職缺：")
+        for item in target_jobs[:max_matches]:
             marker = "NEW " if item.is_new else ""
             freshness = render_freshness(item.job.raw.posted_at, item.first_seen_at, compact=True)
             lines.append(
@@ -114,9 +119,23 @@ def render_run_summary(
                 f"({html.escape(str(item.result.profile))} {item.result.score:.0%}, "
                 f"{html.escape(item.job.raw.location_raw or '未提供')}; {html.escape(freshness)})"
             )
-        if len(matched_jobs) > max_matches:
+            shown += 1
+        remaining = max_matches - shown
+        if stretch_jobs and remaining > 0:
+            lines.append("🪜 延伸職缺（高於你目前職級，可作為挑戰）：")
+        for item in stretch_jobs[:remaining]:
+            marker = "NEW " if item.is_new else ""
+            freshness = render_freshness(item.job.raw.posted_at, item.first_seen_at, compact=True)
             lines.append(
-                f"...另有 {len(matched_jobs) - max_matches} 筆，請到 Supabase match_results 查看完整清單。"
+                f"- {marker}{html.escape(item.company_name)} - "
+                f'<a href="{html.escape(str(item.job.raw.url), quote=True)}">{html.escape(item.job.raw.title)}</a> '
+                f"({html.escape(str(item.result.profile))} {item.result.score:.0%}, "
+                f"{html.escape(item.job.raw.location_raw or '未提供')}; {html.escape(freshness)})"
+            )
+            shown += 1
+        if len(matched_jobs) > shown:
+            lines.append(
+                f"...另有 {len(matched_jobs) - shown} 筆，請到 Supabase match_results 查看完整清單。"
             )
     else:
         lines.append("本次沒有符合門檻的新/變更職缺。")

@@ -8,7 +8,7 @@ from typing import Annotated
 import httpx
 import typer
 
-from .config import Settings, load_companies, load_preferences, load_profiles
+from .config import Settings, load_candidate, load_companies, load_preferences, load_profiles
 from .ndx import fetch_ndx_constituents
 from .notifier import TelegramNotifier, render_job_message
 from .onboarding import (
@@ -37,6 +37,7 @@ def _load(selected: str | None = None):
     companies = load_companies(settings.companies_config)
     profiles = load_profiles(settings.profiles_config)
     preferences = load_preferences(settings.preferences_config)
+    candidate = load_candidate(settings.candidate_config)
     unknown_profiles = sorted(
         {
             profile
@@ -51,7 +52,7 @@ def _load(selected: str | None = None):
         companies = [company for company in companies if company.slug == selected]
         if not companies:
             raise typer.BadParameter(f"Unknown company slug: {selected}")
-    return settings, companies, profiles, preferences
+    return settings, companies, profiles, preferences, candidate
 
 
 def _print_report(report) -> None:
@@ -90,7 +91,7 @@ def run_command(
 ) -> None:
     """Run the monitor and persist results."""
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
-    settings, companies, profiles, preferences = _load(company)
+    settings, companies, profiles, preferences, candidate = _load(company)
     if company and not companies[0].enabled:
         raise typer.BadParameter(
             f"{company} is disabled; verify and enable it before a persisted run"
@@ -117,6 +118,7 @@ def run_command(
             companies,
             profiles,
             preferences,
+            candidate,
             backfill=backfill,
             run_key=run_key,
         )
@@ -136,10 +138,12 @@ def dry_run_command(
 ) -> None:
     """Fetch and score without database writes or Telegram messages."""
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
-    settings, companies, profiles, preferences = _load(company)
+    settings, companies, profiles, preferences, candidate = _load(company)
     if company:
         companies = [item.model_copy(update={"enabled": True}) for item in companies]
-    report = asyncio.run(run_pipeline(settings, companies, profiles, preferences, dry_run=True))
+    report = asyncio.run(
+        run_pipeline(settings, companies, profiles, preferences, candidate, dry_run=True)
+    )
     _print_report(report)
     for item in report.dry_run_matches:
         typer.echo(
@@ -163,7 +167,7 @@ def validate_config(
     ),
 ) -> None:
     """Validate registry and matching profile files."""
-    settings, companies, profiles, preferences = _load()
+    settings, companies, profiles, preferences, candidate = _load()
     resume = load_resume(
         settings.resume_path,
         settings.resume_text.get_secret_value() if settings.resume_text else None,
@@ -179,6 +183,13 @@ def validate_config(
     typer.echo(
         f"Visa sponsorship required: {'yes' if settings.visa_sponsorship_required else 'no'}"
     )
+    if candidate:
+        typer.echo(
+            f"Candidate: {candidate.years_experience} years; level {candidate.current_level.value}; "
+            f"reach +{candidate.max_level_reach}"
+        )
+    else:
+        typer.echo("Candidate: unset; no level/experience reasonableness check applied")
     typer.echo(
         f"Locations: {len(preferences.location_terms)} terms; "
         f"remote: {'included' if preferences.include_remote else 'excluded'}"
@@ -201,7 +212,7 @@ def list_sources(
     json_output: bool = typer.Option(False, "--json", help="Print machine-readable JSON"),
 ) -> None:
     """List source registry entries by onboarding state."""
-    settings, companies, _, _ = _load()
+    settings, companies, _, _, _ = _load()
     try:
         selected = filter_companies(companies, status=status)
     except ValueError as exc:
@@ -229,7 +240,7 @@ def verify_sources(
 ) -> None:
     """Live-check official source endpoints, including disabled registry entries."""
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
-    settings, companies, _, _ = _load()
+    settings, companies, _, _, _ = _load()
     try:
         selected = filter_companies(
             companies,
@@ -321,7 +332,7 @@ def doctor(
     ),
 ) -> None:
     """Check runtime credentials, database connectivity, and schema."""
-    settings, _, _, _ = _load()
+    settings, _, _, _, _ = _load()
     missing_secrets = [
         name
         for name, value in (

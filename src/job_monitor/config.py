@@ -9,7 +9,7 @@ import yaml
 from pydantic import BaseModel, ConfigDict, Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-from .models import CompanyConfig, Seniority
+from .models import CandidateProfile, CompanyConfig, Seniority
 
 
 class Settings(BaseSettings):
@@ -31,6 +31,7 @@ class Settings(BaseSettings):
     companies_config: Path = Path("config/companies.yml")
     profiles_config: Path = Path("config/profiles.yml")
     preferences_config: Path = Path("config/preferences.yml")
+    candidate_config: Path = Path("config/candidate.yml")
     source_candidates_config: Path = Path("config/source_candidates.yml")
     monitor_timezone: str = "America/New_York"
     monitor_hour: int = Field(default=20, ge=0, le=23)
@@ -166,3 +167,15 @@ def load_preferences(path: Path) -> SearchPreferences:
     if not isinstance(payload, dict):
         raise ValueError("preferences config must be a YAML mapping")
     return SearchPreferences.model_validate(payload.get("preferences", payload))
+
+
+def load_candidate(path: Path) -> CandidateProfile | None:
+    if not path.exists():
+        return None
+    payload = _read_yaml(path) or {}
+    if not isinstance(payload, dict):
+        raise ValueError("candidate config must be a YAML mapping")
+    candidate = payload.get("candidate", payload)
+    if candidate is None:
+        return None
+    return CandidateProfile.model_validate(candidate)

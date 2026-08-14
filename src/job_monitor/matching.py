@@ -1,7 +1,12 @@
 from __future__ import annotations
 
+import re
+
 from .config import ProfileConfig, SearchPreferences
 from .models import (
+    CandidateProfile,
+    DegreeLevel,
+    JobLevel,
     MatchResult,
     ParsedJob,
     RawJob,
@@ -63,6 +68,26 @@ CITIZENSHIP_ONLY_TERMS = [
     "requires u.s. citizenship",
     "requires us citizenship",
 ]
+LEVEL_RANK = {
+    JobLevel.UNKNOWN: 0,
+    JobLevel.ENTRY: 1,
+    JobLevel.MID: 2,
+    JobLevel.SENIOR: 3,
+    JobLevel.LEAD: 4,
+    JobLevel.STAFF: 4,
+    JobLevel.PRINCIPAL: 5,
+    JobLevel.DIRECTOR_PLUS: 6,
+}
+SENIORITY_BY_LEVEL = {
+    JobLevel.ENTRY: Seniority.ENTRY,
+    JobLevel.MID: Seniority.MID,
+    JobLevel.SENIOR: Seniority.SENIOR,
+    JobLevel.LEAD: Seniority.LEAD,
+    JobLevel.STAFF: Seniority.LEAD,
+    JobLevel.PRINCIPAL: Seniority.LEAD,
+    JobLevel.DIRECTOR_PLUS: Seniority.DIRECTOR,
+    JobLevel.UNKNOWN: Seniority.UNKNOWN,
+}
 
 
 def _contains(text: str, terms: list[str]) -> bool:
@@ -78,22 +103,59 @@ def _requires_citizenship(text: str) -> bool:
     return _contains(text, CITIZENSHIP_ONLY_TERMS)
 
 
+def _detect_level(title: str) -> JobLevel:
+    if _contains(title, ["intern", "entry level", "junior", "associate analyst"]):
+        return JobLevel.ENTRY
+    if _contains(title, ["director", "vice president", "vp ", "head of", "chief"]):
+        return JobLevel.DIRECTOR_PLUS
+    if _contains(title, ["principal", "distinguished", "fellow"]):
+        return JobLevel.PRINCIPAL
+    if _contains(title, ["staff"]):
+        return JobLevel.STAFF
+    if _contains(title, ["lead", "manager"]):
+        return JobLevel.LEAD
+    if _contains(title, ["senior", " sr ", "sr."]):
+        return JobLevel.SENIOR
+    if _contains(title, ["analyst", "engineer", "scientist", "developer"]):
+        return JobLevel.MID
+    return JobLevel.UNKNOWN
+
+
+def _extract_required_years(text: str) -> int | None:
+    matches: list[int] = []
+    for match in re.finditer(r"\b(\d{1,2})(?:\s*-\s*\d{1,2})?\s*\+?\s*years?\b", text, re.I):
+        value = int(match.group(1))
+        if value > 20:
+            continue
+        before = text[max(0, match.start() - 40) : match.start()].lower()
+        after = text[match.end() : match.end() + 40].lower()
+        if "experience" in after or any(term in before for term in ["minimum", "at least", "with"]):
+            matches.append(value)
+    return max(matches) if matches else None
+
+
+def _extract_degree_required(text: str) -> DegreeLevel:
+    sentences = re.split(r"(?<=[.!?])\s+", text)
+    for sentence in sentences:
+        lower = sentence.lower()
+        if not any(term in lower for term in ["required", "must have"]):
+            continue
+        if any(term in lower for term in ["preferred", "nice to have", "or equivalent", "a plus"]):
+            continue
+        if re.search(r"\b(ph\.?d\.?|doctorate)\b", lower):
+            return DegreeLevel.PHD
+        if re.search(r"\b(master'?s?|ms|m\.s\.)\b", lower):
+            return DegreeLevel.MASTER
+    return DegreeLevel.NONE
+
+
 def parse_job(raw: RawJob) -> ParsedJob:
     title = raw.title.lower()
     text = f" {raw.title} {raw.location_raw} {raw.description_raw} ".lower()
+    requirements_text = f"{raw.title} {raw.description_raw}".lower()
     location_text = f" {raw.location_raw.lower()} "
-    if _contains(title, ["intern", "entry level", "junior", "associate analyst"]):
-        seniority = Seniority.ENTRY
-    elif _contains(title, ["director", "vice president", "vp ", "head of"]):
-        seniority = Seniority.DIRECTOR
-    elif _contains(title, ["principal", "staff", "lead", "manager"]):
-        seniority = Seniority.LEAD
-    elif _contains(title, ["senior", " sr ", "sr."]):
-        seniority = Seniority.SENIOR
-    elif _contains(title, ["analyst", "engineer", "scientist", "developer"]):
-        seniority = Seniority.MID
-    else:
-        seniority = Seniority.UNKNOWN
+    level = _detect_level(title)
+    seniority = SENIORITY_BY_LEVEL[level]
 
     if _contains(location_text, REMOTE_TERMS):
         remote_type = RemoteType.REMOTE
@@ -118,6 +180,7 @@ def parse_job(raw: RawJob) -> ParsedJob:
     skills = {canonical for canonical, aliases in SKILL_ALIASES.items() if _contains(text, aliases)}
     citizenship = _requires_citizenship(text)
     clearance = _contains(text, ["security clearance", "secret clearance", "top secret", "ts/sci"])
+    degree_required = _extract_degree_required(requirements_text)
     if _contains(text, VISA_REJECTION_TERMS):
         visa_support = VisaSupport.DOES_NOT_SUPPORT
     elif _contains(text, VISA_SUPPORT_TERMS):
@@ -135,6 +198,7 @@ def parse_job(raw: RawJob) -> ParsedJob:
     return ParsedJob(
         raw=raw,
         seniority=seniority,
+        level=level,
         remote_type=remote_type,
         job_family=family,
         tech_keywords=skills,
@@ -146,6 +210,20 @@ def parse_job(raw: RawJob) -> ParsedJob:
         else "full_time"
         if "full-time" in text
         else "unknown",
+        required_years_min=_extract_required_years(requirements_text),
+        degree_required=degree_required,
+        people_management=_contains(
+            text,
+            [
+                "manage a team",
+                "managing a team",
+                "lead a team",
+                "leading a team",
+                "direct reports",
+                "people management",
+                "hire and develop",
+            ],
+        ),
         ambiguities=ambiguities,
     )
 
@@ -167,6 +245,24 @@ def _term_score(text: str, terms: list[str], target_hits: int = 5) -> tuple[floa
     return min(1.0, len(hits) / max(1, min(target_hits, len(terms)))), hits
 
 
+def _level_fit(job: ParsedJob, candidate: CandidateProfile) -> tuple[float, int]:
+    if job.level == JobLevel.UNKNOWN:
+        return 0.7, 0
+    gap = LEVEL_RANK[job.level] - LEVEL_RANK[candidate.current_level]
+    if gap == 0:
+        return 1.0, gap
+    if gap > 0:
+        return max(0.0, 1 - 0.45 * gap), gap
+    return max(0.5, 1 + 0.15 * gap), gap
+
+
+def _years_fit(job: ParsedJob, candidate: CandidateProfile) -> float:
+    if job.required_years_min is None:
+        return 1.0
+    gap = job.required_years_min - candidate.years_experience
+    return 1.0 if gap <= 0 else max(0.0, 1 - 0.18 * gap)
+
+
 def match_job(
     job: ParsedJob,
     profile: ProfileConfig,
@@ -175,6 +271,8 @@ def match_job(
     *,
     visa_sponsorship_required: bool = False,
     company_visa_support: VisaSupport = VisaSupport.UNKNOWN,
+    candidate: CandidateProfile | None = None,
+    company_ndx_member: bool = False,
 ) -> MatchResult:
     if (
         preferences.exclude_citizenship_required
@@ -225,6 +323,53 @@ def match_job(
             filtered_reason="location",
         )
 
+    raw_gap = 0
+    bucket = "target"
+    fit = 0.0
+    reach = 1.0
+    if candidate:
+        level_fit, raw_gap = _level_fit(job, candidate)
+        gap = raw_gap
+        if candidate.company_scale == "small" and company_ndx_member and gap > 0:
+            gap += 0.5
+        if job.level == JobLevel.UNKNOWN:
+            level_fit = 0.7
+        elif gap == 0:
+            level_fit = 1.0
+        elif gap > 0:
+            level_fit = max(0.0, 1 - 0.45 * gap)
+        else:
+            level_fit = max(0.5, 1 + 0.15 * gap)
+        years_fit = _years_fit(job, candidate)
+        reach = round(level_fit * years_fit, 3)
+        bucket = "target" if reach >= 0.7 else "stretch" if reach >= 0.35 else "unrealistic"
+        if job.level != JobLevel.UNKNOWN and raw_gap > candidate.max_level_reach:
+            return MatchResult(
+                profile=profile.name,
+                score=0,
+                eligible=False,
+                tier="filtered",
+                filtered_reason="level_reach",
+                fit=0.0,
+                reach=reach,
+                bucket=bucket,
+                level=job.level.value,
+                required_years_min=job.required_years_min,
+            )
+        if bucket == "unrealistic":
+            return MatchResult(
+                profile=profile.name,
+                score=0,
+                eligible=False,
+                tier="filtered",
+                filtered_reason="reach",
+                fit=0.0,
+                reach=reach,
+                bucket=bucket,
+                level=job.level.value,
+                required_years_min=job.required_years_min,
+            )
+
     title_text = job.raw.title.lower()
     title_desc = f"{job.raw.title} {job.raw.description_raw}".lower()
     title_score = 1.0 if any(term.lower() in title_text for term in profile.title_terms) else 0.0
@@ -249,6 +394,8 @@ def match_job(
     skill_score = max(profile_skill_score, resume_skill_score)
     location_score = 1.0
     seniority_score = 1.0 if job.seniority in {Seniority.MID, Seniority.SENIOR} else 0.6
+    if candidate:
+        seniority_score = reach
 
     dimensions = {
         "title": title_score,
@@ -260,10 +407,47 @@ def match_job(
     score = round(
         sum(dimensions.get(key, 0) * weight for key, weight in profile.weights.items()), 3
     )
+    if candidate:
+        fit_weights = {
+            key: profile.weights.get(key, 0.0) for key in ("title", "domain", "skills", "location")
+        }
+        fit_weight_total = sum(fit_weights.values())
+        fit = (
+            sum(dimensions[key] * weight for key, weight in fit_weights.items()) / fit_weight_total
+            if fit_weight_total
+            else 0.0
+        )
     reasons = [f"{key}: {value:.0%}" for key, value in dimensions.items() if value >= 0.5]
     if resume_hits:
         reasons.append("resume: " + ", ".join(sorted(resume_hits)[:5]))
     gaps = []
+    penalty = 0.0
+    if candidate:
+        if (
+            job.required_years_min is not None
+            and job.required_years_min > candidate.years_experience
+        ):
+            gaps.append(
+                f"要求 {job.required_years_min} 年經驗（你 {candidate.years_experience} 年）"
+            )
+        if (
+            job.degree_required == DegreeLevel.PHD
+            and candidate.has_advanced_degree != DegreeLevel.PHD
+        ):
+            gaps.append("要求 PhD 學位")
+            penalty += 0.25
+        elif (
+            job.degree_required == DegreeLevel.MASTER
+            and candidate.has_advanced_degree == DegreeLevel.NONE
+        ):
+            gaps.append("要求碩士學位")
+            penalty += 0.10
+        if job.people_management and candidate.people_managed == 0:
+            gaps.append("需要帶人經驗")
+            penalty += 0.15
+        if raw_gap > 0:
+            gaps.append(f"職級高於現職 {raw_gap} 級")
+        score = round(score * (1 - min(0.5, penalty)), 3)
     if visa_sponsorship_required and job.visa_support == VisaSupport.SUPPORTS:
         reasons.append("visa: sponsorship available")
     elif visa_sponsorship_required and company_visa_support in {
@@ -292,4 +476,9 @@ def match_job(
         tier=tier,
         reasons=reasons,
         gaps=gaps,
+        fit=round(fit, 3),
+        reach=reach,
+        bucket=bucket,
+        level=job.level.value if candidate else None,
+        required_years_min=job.required_years_min if candidate else None,
     )
