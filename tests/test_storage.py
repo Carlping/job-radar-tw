@@ -3,6 +3,7 @@ from sqlalchemy import event, func, select
 
 from job_monitor.models import CompanyConfig, MatchResult, RawJob
 from job_monitor.storage import (
+    JobIndexRow,
     MatchDecision,
     Storage,
     job_versions,
@@ -484,3 +485,75 @@ def test_batched_persistence_sql_scales_by_chunk(tmp_path):
     apply_jobs(db, company_id, run_id, raws, batched=True)
 
     assert len(statements) < len(raws) * 5
+
+
+def _duplicate_items(db, company_id, raws):
+    index = db.prefetch_job_index(company_id)
+    items = []
+    for item in raws:
+        plan = db.plan_job_from_index(item, index.get(item.stable_external_id))
+        index[item.stable_external_id] = JobIndexRow(
+            job_id=plan.job_id,
+            content_hash=item.content_hash,
+            first_seen_at=plan.first_seen_at,
+        )
+        items.append((item, plan, []))
+    return items
+
+
+def test_batched_duplicate_external_id_with_identical_content(tmp_path):
+    db = Storage(f"sqlite:///{tmp_path / 'test.db'}", create_schema=True)
+    company_id = db.sync_company(company())
+    run_id = db.start_run("batch")
+    assert run_id
+    item = raw_job("duplicate")
+
+    results = db.persist_job_decisions_batch(
+        company_id,
+        run_id,
+        _duplicate_items(db, company_id, [item, item]),
+    )
+
+    assert [(result.is_new, result.changed) for result in results] == [
+        (True, True),
+        (False, False),
+    ]
+    with db.engine.connect() as conn:
+        assert (
+            conn.execute(
+                select(func.count()).select_from(jobs).where(jobs.c.company_id == company_id)
+            ).scalar_one()
+            == 1
+        )
+
+
+def test_batched_duplicate_external_id_with_changed_second_content(tmp_path, monkeypatch):
+    db = Storage(f"sqlite:///{tmp_path / 'test.db'}", create_schema=True)
+    company_id = db.sync_company(company())
+    run_id = db.start_run("batch")
+    assert run_id
+    first = raw_job("duplicate", "first")
+    second = raw_job("duplicate", "second")
+    fallback_calls = []
+    original_persist = db.persist_job_decisions
+
+    def fallback(*args, **kwargs):
+        fallback_calls.append(True)
+        return original_persist(*args, **kwargs)
+
+    monkeypatch.setattr(db, "persist_job_decisions", fallback)
+
+    results = db.persist_job_decisions_batch(
+        company_id,
+        run_id,
+        _duplicate_items(db, company_id, [first, second]),
+    )
+
+    assert [(result.is_new, result.changed) for result in results] == [
+        (True, True),
+        (False, True),
+    ]
+    assert fallback_calls == [True]
+    plan = db.plan_job(company_id, second)
+    assert plan.is_new is False
+    assert plan.changed is False

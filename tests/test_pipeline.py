@@ -233,18 +233,14 @@ async def test_partial_baseline_retry_does_not_enqueue_initial_jobs(tmp_path, mo
     )
     preferences = SearchPreferences(location_terms=["Austin"], include_remote=False)
 
-    original_persist = storage.persist_job_decisions
-    persist_calls = 0
+    original_batch = storage.persist_job_decisions_batch
 
-    def crash_during_second_job(*args, **kwargs):
-        nonlocal persist_calls
-        persist_calls += 1
-        if persist_calls == 2:
-            raise RuntimeError("simulated mid-baseline crash")
-        return original_persist(*args, **kwargs)
+    def crash_during_second_job(company_id, run_id, items):
+        original_batch(company_id, run_id, items[:1])
+        raise RuntimeError("simulated mid-baseline crash")
 
     with monkeypatch.context() as crash_patch:
-        crash_patch.setattr(storage, "persist_job_decisions", crash_during_second_job)
+        crash_patch.setattr(storage, "persist_job_decisions_batch", crash_during_second_job)
         with pytest.raises(RuntimeError, match="simulated mid-baseline crash"):
             await pipeline.run_pipeline(
                 settings,
@@ -336,18 +332,14 @@ async def test_retry_drains_outbox_after_crash_following_atomic_job_commit(
     storage.source_succeeded(company_id, setup_run)
     assert storage.finish_run(setup_run, {"sources_succeeded": 1}, [])
 
-    original_persist = storage.persist_job_decisions
-    persist_calls = 0
+    original_batch = storage.persist_job_decisions_batch
 
-    def crash_before_second_job(*args, **kwargs):
-        nonlocal persist_calls
-        persist_calls += 1
-        if persist_calls == 2:
-            raise RuntimeError("simulated crash after first atomic job")
-        return original_persist(*args, **kwargs)
+    def crash_before_second_job(company_id, run_id, items):
+        original_batch(company_id, run_id, items[:1])
+        raise RuntimeError("simulated crash after first atomic job")
 
     with monkeypatch.context() as crash_patch:
-        crash_patch.setattr(storage, "persist_job_decisions", crash_before_second_job)
+        crash_patch.setattr(storage, "persist_job_decisions_batch", crash_before_second_job)
         with pytest.raises(RuntimeError, match="simulated crash after first atomic job"):
             await pipeline.run_pipeline(
                 settings,

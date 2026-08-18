@@ -2,9 +2,10 @@ from __future__ import annotations
 
 import logging
 import uuid
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from typing import Any
+from typing import Any, cast
 
 from sqlalchemy import (
     JSON,
@@ -545,7 +546,7 @@ class Storage:
     @staticmethod
     def _plan_from_row(
         raw: RawJob,
-        row: JobIndexRow | dict[str, Any] | None,
+        row: JobIndexRow | Mapping[str, Any] | None,
         now: datetime,
     ) -> JobPlan:
         if row is None:
@@ -613,7 +614,11 @@ class Storage:
         return self._plan_from_row(raw, row, datetime.now(UTC))
 
     @staticmethod
-    def _validate_job_plan(plan: JobPlan, raw: RawJob, row) -> None:
+    def _validate_job_plan(
+        plan: JobPlan,
+        raw: RawJob,
+        row: Mapping[str, Any] | None,
+    ) -> None:
         if plan.is_new:
             if row is not None or plan.previous_content_hash is not None:
                 raise RuntimeError("job changed while its match decision was prepared")
@@ -1091,7 +1096,9 @@ class Storage:
                 plan,
                 decisions,
             )
-        return [result for result in results if result is not None]
+        if any(result is None for result in results):
+            raise RuntimeError("batch persistence did not produce a result for every job")
+        return cast(list[JobPersistResult], results)
 
     def upsert_job(
         self, company_id: str, run_id: str, raw: RawJob
