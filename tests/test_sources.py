@@ -8,6 +8,7 @@ from job_monitor.sources import (
     GreenhouseSource,
     LeverSource,
     SmartRecruitersSource,
+    SourceError,
     WorkdaySource,
 )
 
@@ -164,3 +165,64 @@ async def test_workday_searches_and_deduplicates():
         rows = await WorkdaySource(cfg, client).fetch()
     assert len(rows) == 1
     assert rows[0].external_job_id.endswith("_R1")
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_workday_skips_posting_missing_title(caplog):
+    endpoint = "https://acme.wd1.myworkdayjobs.com/wday/cxs/acme/External/jobs"
+    respx.post(endpoint).mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "total": 3,
+                "jobPostings": [
+                    {
+                        "title": "Data Analyst",
+                        "externalPath": "/job/Phoenix/Data-Analyst_R1",
+                    },
+                    {"externalPath": "/job/Phoenix/Malformed_R2"},
+                    {"title": "Missing URL"},
+                ],
+            },
+        )
+    )
+    cfg = company(
+        "workday",
+        {
+            "endpoint": endpoint,
+            "site": "acme.wd1.myworkdayjobs.com",
+            "detail_base_url": "https://acme.wd1.myworkdayjobs.com/en-US/External",
+        },
+    )
+    async with httpx.AsyncClient() as client:
+        rows = await WorkdaySource(cfg, client).fetch()
+    assert len(rows) == 1
+    assert rows[0].title == "Data Analyst"
+    assert "Skipping malformed Workday posting for acme" in caplog.text
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {},
+        {"jobPostings": {}},
+        {"jobPostings": None},
+    ],
+)
+@respx.mock
+async def test_workday_rejects_invalid_job_postings(payload):
+    endpoint = "https://acme.wd1.myworkdayjobs.com/wday/cxs/acme/External/jobs"
+    respx.post(endpoint).mock(return_value=httpx.Response(200, json=payload))
+    cfg = company(
+        "workday",
+        {
+            "endpoint": endpoint,
+            "site": "acme.wd1.myworkdayjobs.com",
+            "detail_base_url": "https://acme.wd1.myworkdayjobs.com/en-US/External",
+        },
+    )
+    async with httpx.AsyncClient() as client:
+        with pytest.raises(SourceError, match="jobPostings"):
+            await WorkdaySource(cfg, client).fetch()
