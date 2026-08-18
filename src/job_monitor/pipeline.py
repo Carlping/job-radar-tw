@@ -175,9 +175,7 @@ def _qualifies_for_immediate_notification(
 ) -> bool:
     if result.bucket != "target":
         return False
-    if backfill:
-        return True
-    if not is_new:
+    if not is_new and not backfill:
         return False
     if result.tier != "strong" or result.score < settings.immediate_notification_min_score:
         return False

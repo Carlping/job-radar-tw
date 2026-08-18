@@ -171,7 +171,7 @@ def test_immediate_notification_gate_requires_fresh_new_strong_match():
     )
 
 
-def test_backfill_gate_accepts_old_existing_eligible_match():
+def test_backfill_gate_allows_old_existing_strong_match_above_threshold():
     settings = Settings(
         immediate_notification_min_score=0.82,
         immediate_notification_max_source_age_days=14,
@@ -182,10 +182,10 @@ def test_backfill_gate_accepts_old_existing_eligible_match():
         title="Data Analyst",
         location_raw="Austin, TX",
         description_raw="SQL analytics",
-        posted_at=datetime(2025, 1, 1, tzinfo=UTC),
+        posted_at=datetime(2026, 6, 20, tzinfo=UTC),
         url="https://example.com/jobs/1",
     )
-    result = MatchResult(profile="custom", score=0.65, eligible=True, tier="match")
+    result = MatchResult(profile="custom", score=0.9, eligible=True, tier="strong")
 
     assert _qualifies_for_immediate_notification(
         ParsedJob(raw=raw),
@@ -194,6 +194,71 @@ def test_backfill_gate_accepts_old_existing_eligible_match():
         settings,
         is_new=False,
         backfill=True,
+    )
+
+
+@pytest.mark.parametrize(
+    ("result", "posted_at", "backfill"),
+    [
+        (
+            MatchResult(profile="custom", score=0.81, eligible=True, tier="strong"),
+            datetime(2026, 6, 20, tzinfo=UTC),
+            True,
+        ),
+        (
+            MatchResult(profile="custom", score=0.9, eligible=True, tier="match"),
+            datetime(2026, 6, 20, tzinfo=UTC),
+            True,
+        ),
+        (
+            MatchResult(
+                profile="custom",
+                score=0.95,
+                eligible=True,
+                tier="strong",
+                bucket="stretch",
+            ),
+            datetime(2026, 6, 20, tzinfo=UTC),
+            True,
+        ),
+        (
+            MatchResult(profile="custom", score=0.9, eligible=True, tier="strong"),
+            datetime(2025, 1, 1, tzinfo=UTC),
+            True,
+        ),
+        (
+            MatchResult(profile="custom", score=0.9, eligible=True, tier="strong"),
+            datetime(2026, 6, 20, tzinfo=UTC),
+            False,
+        ),
+    ],
+)
+def test_backfill_gate_keeps_score_tier_age_and_newness_gates(
+    result,
+    posted_at,
+    backfill,
+):
+    settings = Settings(
+        immediate_notification_min_score=0.82,
+        immediate_notification_max_source_age_days=14,
+    )
+    raw = RawJob(
+        source_company="acme",
+        external_job_id="1",
+        title="Data Analyst",
+        location_raw="Austin, TX",
+        description_raw="SQL analytics",
+        posted_at=posted_at,
+        url="https://example.com/jobs/1",
+    )
+
+    assert not _qualifies_for_immediate_notification(
+        ParsedJob(raw=raw),
+        result,
+        datetime(2026, 6, 26, tzinfo=UTC),
+        settings,
+        is_new=False,
+        backfill=backfill,
     )
 
 

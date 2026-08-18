@@ -100,7 +100,7 @@ class FakeNotifier:
 
 
 @pytest.mark.asyncio
-async def test_backfill_notifies_all_unnotified_eligible_matches_before_cap(monkeypatch):
+async def test_backfill_applies_notification_gates_before_cap(monkeypatch):
     raw_jobs = [
         RawJob(
             source_company="acme",
@@ -168,14 +168,13 @@ async def test_backfill_notifies_all_unnotified_eligible_matches_before_cap(monk
     )
 
     assert report.matches == 4
-    assert report.immediate_candidates == 3
-    assert report.notifications == 2
-    assert report.notifications_suppressed == 1
-    assert report.notifications_pending == 1
+    assert report.immediate_candidates == 0
+    assert report.notifications == 0
+    assert report.notifications_suppressed == 0
+    assert report.notifications_pending == 0
     assert len(storage.matches) == 4
-    assert len(storage.notifications) == 2
-    assert len(storage.outbox) == 1
-    assert all(item[0] != "job-0" for item in storage.notifications)
+    assert len(storage.notifications) == 0
+    assert len(storage.outbox) == 0
     assert storage.finished is not None
 
 
