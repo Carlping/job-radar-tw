@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -19,6 +20,8 @@ from sqlalchemy import (
     Table,
     Text,
     UniqueConstraint,
+    and_,
+    bindparam,
     case,
     create_engine,
     delete,
@@ -34,6 +37,8 @@ from sqlalchemy.engine import Engine
 from sqlalchemy.exc import IntegrityError
 
 from .models import CompanyConfig, MatchResult, RawJob
+
+logger = logging.getLogger(__name__)
 
 metadata = MetaData()
 
@@ -200,6 +205,8 @@ APPLICATION_STAGES = {
     "archived",
 }
 
+PERSIST_CHUNK_SIZE = 200
+
 
 def normalize_database_url(url: str) -> str:
     if url.startswith("postgresql://"):
@@ -220,6 +227,13 @@ class JobPlan:
     changed: bool
     first_seen_at: datetime
     previous_content_hash: str | None
+
+
+@dataclass(frozen=True)
+class JobIndexRow:
+    job_id: str
+    content_hash: str
+    first_seen_at: datetime
 
 
 @dataclass(frozen=True)
@@ -528,19 +542,12 @@ class Storage:
                 ).scalar_one()
             )
 
-    def plan_job(self, company_id: str, raw: RawJob) -> JobPlan:
-        now = datetime.now(UTC)
-        with self.engine.connect() as conn:
-            row = (
-                conn.execute(
-                    select(jobs).where(
-                        jobs.c.company_id == company_id,
-                        jobs.c.external_job_id == raw.stable_external_id,
-                    )
-                )
-                .mappings()
-                .one_or_none()
-            )
+    @staticmethod
+    def _plan_from_row(
+        raw: RawJob,
+        row: JobIndexRow | dict[str, Any] | None,
+        now: datetime,
+    ) -> JobPlan:
         if row is None:
             return JobPlan(
                 job_id=str(uuid.uuid4()),
@@ -549,13 +556,76 @@ class Storage:
                 first_seen_at=now,
                 previous_content_hash=None,
             )
+        if isinstance(row, JobIndexRow):
+            job_id = row.job_id
+            content_hash = row.content_hash
+            first_seen_at = row.first_seen_at
+        else:
+            job_id = row["job_id"]
+            content_hash = row["content_hash"]
+            first_seen_at = row["first_seen_at"]
         return JobPlan(
-            job_id=row["id"],
+            job_id=job_id,
             is_new=False,
-            changed=row["content_hash"] != raw.content_hash,
-            first_seen_at=row["first_seen_at"],
-            previous_content_hash=row["content_hash"],
+            changed=content_hash != raw.content_hash,
+            first_seen_at=first_seen_at,
+            previous_content_hash=content_hash,
         )
+
+    def prefetch_job_index(self, company_id: str) -> dict[str, JobIndexRow]:
+        with self.engine.connect() as conn:
+            rows = conn.execute(
+                select(
+                    jobs.c.external_job_id,
+                    jobs.c.id,
+                    jobs.c.content_hash,
+                    jobs.c.first_seen_at,
+                ).where(jobs.c.company_id == company_id)
+            ).mappings()
+            return {
+                row["external_job_id"]: JobIndexRow(
+                    job_id=row["id"],
+                    content_hash=row["content_hash"],
+                    first_seen_at=row["first_seen_at"],
+                )
+                for row in rows
+            }
+
+    def plan_job_from_index(self, raw: RawJob, row: JobIndexRow | None) -> JobPlan:
+        return self._plan_from_row(raw, row, datetime.now(UTC))
+
+    def plan_job(self, company_id: str, raw: RawJob) -> JobPlan:
+        with self.engine.connect() as conn:
+            row = (
+                conn.execute(
+                    select(
+                        jobs.c.id.label("job_id"),
+                        jobs.c.content_hash,
+                        jobs.c.first_seen_at,
+                    ).where(
+                        jobs.c.company_id == company_id,
+                        jobs.c.external_job_id == raw.stable_external_id,
+                    )
+                )
+                .mappings()
+                .one_or_none()
+            )
+        return self._plan_from_row(raw, row, datetime.now(UTC))
+
+    @staticmethod
+    def _validate_job_plan(plan: JobPlan, raw: RawJob, row) -> None:
+        if plan.is_new:
+            if row is not None or plan.previous_content_hash is not None:
+                raise RuntimeError("job changed while its match decision was prepared")
+            return
+        if (
+            row is None
+            or row["id"] != plan.job_id
+            or row["content_hash"] != plan.previous_content_hash
+        ):
+            raise RuntimeError("job changed while its match decision was prepared")
+        if plan.changed != (row["content_hash"] != raw.content_hash):
+            raise RuntimeError("job change state no longer matches its prepared decision")
 
     def persist_job_decisions(
         self,
@@ -581,9 +651,8 @@ class Storage:
                 .mappings()
                 .one_or_none()
             )
+            self._validate_job_plan(plan, raw, row)
             if plan.is_new:
-                if row is not None or plan.previous_content_hash is not None:
-                    raise RuntimeError("job changed while its match decision was prepared")
                 conn.execute(
                     insert(jobs).values(
                         id=plan.job_id,
@@ -603,14 +672,6 @@ class Storage:
                     )
                 )
             else:
-                if (
-                    row is None
-                    or row["id"] != plan.job_id
-                    or row["content_hash"] != plan.previous_content_hash
-                ):
-                    raise RuntimeError("job changed while its match decision was prepared")
-                if plan.changed != (row["content_hash"] != raw.content_hash):
-                    raise RuntimeError("job change state no longer matches its prepared decision")
                 conn.execute(
                     update(jobs)
                     .where(jobs.c.id == plan.job_id)
@@ -684,6 +745,353 @@ class Storage:
                 first_seen_at=plan.first_seen_at,
                 notifications_enqueued=notifications_enqueued,
             )
+
+    def persist_job_decisions_batch(
+        self,
+        company_id: str,
+        run_id: str,
+        items: list[tuple[RawJob, JobPlan, list[MatchDecision]]],
+    ) -> list[JobPersistResult]:
+        if not items:
+            return []
+        results: list[JobPersistResult | None] = [None] * len(items)
+        fallback: list[int] = []
+        now = datetime.now(UTC)
+        with self.engine.begin() as conn:
+            self._assert_active_run(conn, run_id)
+            locked_items = [
+                (index, raw, plan, decisions)
+                for index, (raw, plan, decisions) in enumerate(items)
+                if plan.is_new or plan.changed or decisions
+            ]
+            rows_by_external_id: dict[str, dict[str, Any]] = {}
+            if locked_items:
+                external_ids = [raw.stable_external_id for _, raw, _, _ in locked_items]
+                rows = conn.execute(
+                    select(jobs)
+                    .where(
+                        jobs.c.company_id == company_id,
+                        jobs.c.external_job_id.in_(external_ids),
+                    )
+                    .with_for_update()
+                ).mappings()
+                rows_by_external_id = {row["external_job_id"]: row for row in rows}
+
+            valid_locked: list[tuple[int, RawJob, JobPlan, list[MatchDecision]]] = []
+            for index, raw, plan, decisions in locked_items:
+                try:
+                    self._validate_job_plan(
+                        plan,
+                        raw,
+                        rows_by_external_id.get(raw.stable_external_id),
+                    )
+                except RuntimeError:
+                    fallback.append(index)
+                    logger.warning(
+                        "Falling back to single-job persistence for %s after snapshot mismatch",
+                        raw.stable_external_id,
+                    )
+                else:
+                    valid_locked.append((index, raw, plan, decisions))
+
+            valid_indexes = {index for index, *_ in valid_locked}
+            touch_items = [
+                (index, raw, plan, decisions)
+                for index, (raw, plan, decisions) in enumerate(items)
+                if index not in fallback and index not in valid_indexes
+            ]
+            if touch_items:
+                conn.execute(
+                    update(jobs)
+                    .where(
+                        jobs.c.company_id == company_id,
+                        jobs.c.external_job_id.in_(
+                            [raw.stable_external_id for _, raw, _, _ in touch_items]
+                        ),
+                    )
+                    .values(
+                        last_seen_at=now,
+                        last_seen_run_id=run_id,
+                        status="active",
+                        missing_count=0,
+                    )
+                )
+                for index, _, plan, _ in touch_items:
+                    results[index] = JobPersistResult(
+                        job_id=plan.job_id,
+                        is_new=plan.is_new,
+                        changed=plan.changed,
+                        first_seen_at=plan.first_seen_at,
+                        notifications_enqueued=0,
+                    )
+
+            if valid_locked:
+                new_items = [
+                    (index, raw, plan, decisions)
+                    for index, raw, plan, decisions in valid_locked
+                    if plan.is_new
+                ]
+                existing_items = [
+                    (index, raw, plan, decisions)
+                    for index, raw, plan, decisions in valid_locked
+                    if not plan.is_new
+                ]
+                if new_items:
+                    conn.execute(
+                        insert(jobs),
+                        [
+                            {
+                                "id": plan.job_id,
+                                "company_id": company_id,
+                                "external_job_id": raw.stable_external_id,
+                                "title": raw.title,
+                                "location_raw": raw.location_raw,
+                                "description_raw": raw.description_raw,
+                                "canonical_url": raw.canonical_url,
+                                "source_posted_at": raw.posted_at,
+                                "first_seen_at": plan.first_seen_at,
+                                "last_seen_at": now,
+                                "last_seen_run_id": run_id,
+                                "content_hash": raw.content_hash,
+                                "status": "active",
+                                "missing_count": 0,
+                            }
+                            for _, raw, plan, _ in new_items
+                        ],
+                    )
+                if existing_items:
+                    conn.execute(
+                        update(jobs)
+                        .where(jobs.c.id == bindparam("_persist_job_id"))
+                        .values(
+                            title=bindparam("_title"),
+                            location_raw=bindparam("_location_raw"),
+                            description_raw=bindparam("_description_raw"),
+                            canonical_url=bindparam("_canonical_url"),
+                            source_posted_at=bindparam("_source_posted_at"),
+                            last_seen_at=bindparam("_last_seen_at"),
+                            last_seen_run_id=bindparam("_last_seen_run_id"),
+                            content_hash=bindparam("_content_hash"),
+                            status=bindparam("_status"),
+                            missing_count=bindparam("_missing_count"),
+                        ),
+                        [
+                            {
+                                "_persist_job_id": plan.job_id,
+                                "_title": raw.title,
+                                "_location_raw": raw.location_raw,
+                                "_description_raw": raw.description_raw,
+                                "_canonical_url": raw.canonical_url,
+                                "_source_posted_at": raw.posted_at,
+                                "_last_seen_at": now,
+                                "_last_seen_run_id": run_id,
+                                "_content_hash": raw.content_hash,
+                                "_status": "active",
+                                "_missing_count": 0,
+                            }
+                            for _, raw, plan, _ in existing_items
+                        ],
+                    )
+
+                changed_items = [
+                    (index, raw, plan, decisions)
+                    for index, raw, plan, decisions in valid_locked
+                    if plan.changed
+                ]
+                if changed_items:
+                    job_ids = [plan.job_id for _, _, plan, _ in changed_items]
+                    content_hashes = [raw.content_hash for _, raw, _, _ in changed_items]
+                    existing_versions = {
+                        (row["job_id"], row["content_hash"])
+                        for row in conn.execute(
+                            select(job_versions.c.job_id, job_versions.c.content_hash).where(
+                                job_versions.c.job_id.in_(job_ids),
+                                job_versions.c.content_hash.in_(content_hashes),
+                            )
+                        ).mappings()
+                    }
+                    missing_versions = [
+                        {
+                            "id": str(uuid.uuid4()),
+                            "job_id": plan.job_id,
+                            "content_hash": raw.content_hash,
+                            "payload": raw.model_dump(mode="json"),
+                            "created_at": now,
+                        }
+                        for _, raw, plan, _ in changed_items
+                        if (plan.job_id, raw.content_hash) not in existing_versions
+                    ]
+                    if missing_versions:
+                        conn.execute(insert(job_versions), missing_versions)
+                    conn.execute(
+                        delete(notification_outbox).where(
+                            or_(
+                                *(
+                                    and_(
+                                        notification_outbox.c.job_id == plan.job_id,
+                                        notification_outbox.c.version_hash != raw.content_hash,
+                                    )
+                                    for _, raw, plan, _ in changed_items
+                                )
+                            )
+                        )
+                    )
+
+                match_entries = [
+                    (index, raw, plan, decision)
+                    for index, raw, plan, decisions in valid_locked
+                    for decision in decisions
+                ]
+                existing_match_keys: set[tuple[str, str, str, str]] = set()
+                if match_entries:
+                    match_job_ids = [plan.job_id for _, _, plan, _ in match_entries]
+                    match_hashes = [raw.content_hash for _, raw, _, _ in match_entries]
+                    existing_match_keys = {
+                        (
+                            row["job_id"],
+                            row["profile"],
+                            row["profile_version"],
+                            row["content_hash"],
+                        )
+                        for row in conn.execute(
+                            select(
+                                match_results.c.job_id,
+                                match_results.c.profile,
+                                match_results.c.profile_version,
+                                match_results.c.content_hash,
+                            ).where(
+                                match_results.c.job_id.in_(match_job_ids),
+                                match_results.c.content_hash.in_(match_hashes),
+                            )
+                        ).mappings()
+                    }
+                    match_values = []
+                    for _, raw, plan, decision in match_entries:
+                        key = (
+                            plan.job_id,
+                            str(decision.result.profile),
+                            decision.profile_version,
+                            raw.content_hash,
+                        )
+                        if key in existing_match_keys:
+                            continue
+                        existing_match_keys.add(key)
+                        match_values.append(
+                            {
+                                "id": str(uuid.uuid4()),
+                                "job_id": plan.job_id,
+                                "profile": str(decision.result.profile),
+                                "profile_version": decision.profile_version,
+                                "content_hash": raw.content_hash,
+                                "score": decision.result.score,
+                                "eligible": decision.result.eligible,
+                                "tier": decision.result.tier,
+                                "details": decision.result.model_dump(mode="json"),
+                                "created_at": now,
+                            }
+                        )
+                    if match_values:
+                        conn.execute(insert(match_results), match_values)
+
+                notification_entries = [
+                    (index, raw, plan, decision)
+                    for index, raw, plan, decisions in valid_locked
+                    for decision in decisions
+                    if decision.notification_message is not None and decision.result.eligible
+                ]
+                notification_counts: dict[int, int] = {}
+                if notification_entries:
+                    notification_job_ids = [plan.job_id for _, _, plan, _ in notification_entries]
+                    notification_hashes = [
+                        raw.content_hash for _, raw, _, _ in notification_entries
+                    ]
+                    notification_profiles = [
+                        str(decision.result.profile) for _, _, _, decision in notification_entries
+                    ]
+                    sent_keys = {
+                        (
+                            row["job_id"],
+                            row["profile"],
+                            row["version_hash"],
+                        )
+                        for row in conn.execute(
+                            select(
+                                notifications.c.job_id,
+                                notifications.c.profile,
+                                notifications.c.version_hash,
+                            ).where(
+                                notifications.c.job_id.in_(notification_job_ids),
+                                notifications.c.profile.in_(notification_profiles),
+                                notifications.c.version_hash.in_(notification_hashes),
+                                notifications.c.channel == "telegram",
+                            )
+                        ).mappings()
+                    }
+                    queued_keys = {
+                        (
+                            row["job_id"],
+                            row["profile"],
+                            row["version_hash"],
+                        )
+                        for row in conn.execute(
+                            select(
+                                notification_outbox.c.job_id,
+                                notification_outbox.c.profile,
+                                notification_outbox.c.version_hash,
+                            ).where(
+                                notification_outbox.c.job_id.in_(notification_job_ids),
+                                notification_outbox.c.profile.in_(notification_profiles),
+                                notification_outbox.c.version_hash.in_(notification_hashes),
+                                notification_outbox.c.channel == "telegram",
+                            )
+                        ).mappings()
+                    }
+                    outbox_values = []
+                    for index, raw, plan, decision in notification_entries:
+                        key = (
+                            plan.job_id,
+                            str(decision.result.profile),
+                            raw.content_hash,
+                        )
+                        if key in sent_keys or key in queued_keys:
+                            continue
+                        queued_keys.add(key)
+                        notification_counts[index] = notification_counts.get(index, 0) + 1
+                        outbox_values.append(
+                            {
+                                "id": str(uuid.uuid4()),
+                                "job_id": plan.job_id,
+                                "profile": str(decision.result.profile),
+                                "channel": "telegram",
+                                "version_hash": raw.content_hash,
+                                "score": decision.result.score,
+                                "message": decision.notification_message,
+                                "created_at": now,
+                                "attempt_count": 0,
+                            }
+                        )
+                    if outbox_values:
+                        conn.execute(insert(notification_outbox), outbox_values)
+
+                for index, raw, plan, _ in valid_locked:
+                    results[index] = JobPersistResult(
+                        job_id=plan.job_id,
+                        is_new=plan.is_new,
+                        changed=plan.changed,
+                        first_seen_at=plan.first_seen_at,
+                        notifications_enqueued=notification_counts.get(index, 0),
+                    )
+
+        for index in fallback:
+            raw, plan, decisions = items[index]
+            results[index] = self.persist_job_decisions(
+                company_id,
+                run_id,
+                raw,
+                plan,
+                decisions,
+            )
+        return [result for result in results if result is not None]
 
     def upsert_job(
         self, company_id: str, run_id: str, raw: RawJob
