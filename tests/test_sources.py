@@ -203,6 +203,43 @@ async def test_workday_skips_posting_missing_title(caplog):
 
 
 @pytest.mark.asyncio
+@respx.mock
+async def test_workday_skips_posting_with_invalid_url(caplog):
+    endpoint = "https://acme.wd1.myworkdayjobs.com/wday/cxs/acme/External/jobs"
+    respx.post(endpoint).mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "total": 2,
+                "jobPostings": [
+                    {
+                        "title": "Data Analyst",
+                        "externalPath": "https://jobs.example.com/usable",
+                    },
+                    {
+                        "title": "Invalid URL",
+                        "externalPath": "/job/Phoenix/Invalid_R2",
+                    },
+                ],
+            },
+        )
+    )
+    cfg = company(
+        "workday",
+        {
+            "endpoint": endpoint,
+            "site": "acme.wd1.myworkdayjobs.com",
+            "detail_base_url": "",
+        },
+    )
+    async with httpx.AsyncClient() as client:
+        rows = await WorkdaySource(cfg, client).fetch()
+    assert len(rows) == 1
+    assert rows[0].title == "Data Analyst"
+    assert "invalid fields" in caplog.text
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     "payload",
     [

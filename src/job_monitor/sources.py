@@ -9,6 +9,7 @@ from typing import Any
 
 import httpx
 from bs4 import BeautifulSoup
+from pydantic import ValidationError
 from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_exponential
 
 from .models import AtsType, CompanyConfig, RawJob
@@ -68,6 +69,19 @@ def _warn_skipped_item(source: str, company_slug: str, reason: str, item: Any) -
     )
 
 
+def _append_raw_job(
+    jobs: list[RawJob],
+    source: str,
+    company_slug: str,
+    item: Any,
+    **fields: Any,
+) -> None:
+    try:
+        jobs.append(RawJob(**fields))
+    except ValidationError:
+        _warn_skipped_item(source, company_slug, "invalid fields", item)
+
+
 class SourceError(RuntimeError):
     pass
 
@@ -112,17 +126,19 @@ class GreenhouseSource(JobSource):
                 continue
             location = item.get("location")
             location_name = location.get("name", "") if isinstance(location, dict) else ""
-            jobs.append(
-                RawJob(
-                    source_company=self.company.slug,
-                    external_job_id=(str(item.get("id")) if item.get("id") is not None else None),
-                    title=title,
-                    location_raw=location_name,
-                    description_raw=_html_text(item.get("content")),
-                    posted_at=_parse_datetime(item.get("updated_at")),
-                    url=item_url,
-                    metadata={"departments": item.get("departments", [])},
-                )
+            _append_raw_job(
+                jobs,
+                "Greenhouse",
+                self.company.slug,
+                item,
+                source_company=self.company.slug,
+                external_job_id=(str(item.get("id")) if item.get("id") is not None else None),
+                title=title,
+                location_raw=location_name,
+                description_raw=_html_text(item.get("content")),
+                posted_at=_parse_datetime(item.get("updated_at")),
+                url=item_url,
+                metadata={"departments": item.get("departments", [])},
             )
         return jobs
 
@@ -146,19 +162,19 @@ class LeverSource(JobSource):
                 continue
             categories = item.get("categories")
             categories = categories if isinstance(categories, dict) else {}
-            jobs.append(
-                RawJob(
-                    source_company=self.company.slug,
-                    external_job_id=str(item.get("id")) if item.get("id") is not None else None,
-                    title=title,
-                    location_raw=categories.get("location", ""),
-                    description_raw=_html_text(
-                        item.get("descriptionPlain") or item.get("description")
-                    ),
-                    posted_at=_parse_datetime(item.get("createdAt")),
-                    url=item_url,
-                    metadata={"categories": categories},
-                )
+            _append_raw_job(
+                jobs,
+                "Lever",
+                self.company.slug,
+                item,
+                source_company=self.company.slug,
+                external_job_id=str(item.get("id")) if item.get("id") is not None else None,
+                title=title,
+                location_raw=categories.get("location", ""),
+                description_raw=_html_text(item.get("descriptionPlain") or item.get("description")),
+                posted_at=_parse_datetime(item.get("createdAt")),
+                url=item_url,
+                metadata={"categories": categories},
             )
         return jobs
 
@@ -180,19 +196,21 @@ class AshbySource(JobSource):
             if not _usable_text(item_url):
                 _warn_skipped_item("Ashby", self.company.slug, "missing URL", item)
                 continue
-            jobs.append(
-                RawJob(
-                    source_company=self.company.slug,
-                    external_job_id=str(item.get("id") or item_url),
-                    title=title,
-                    location_raw=item.get("location", ""),
-                    description_raw=_html_text(
-                        item.get("descriptionHtml") or item.get("descriptionPlain")
-                    ),
-                    posted_at=_parse_datetime(item.get("publishedAt")),
-                    url=item_url,
-                    metadata={"department": item.get("department")},
-                )
+            _append_raw_job(
+                jobs,
+                "Ashby",
+                self.company.slug,
+                item,
+                source_company=self.company.slug,
+                external_job_id=str(item.get("id") or item_url),
+                title=title,
+                location_raw=item.get("location", ""),
+                description_raw=_html_text(
+                    item.get("descriptionHtml") or item.get("descriptionPlain")
+                ),
+                posted_at=_parse_datetime(item.get("publishedAt")),
+                url=item_url,
+                metadata={"department": item.get("department")},
             )
         return jobs
 
@@ -227,21 +245,23 @@ class SmartRecruitersSource(JobSource):
                     for section in sections.values()
                     if isinstance(section, dict)
                 )
-                jobs.append(
-                    RawJob(
-                        source_company=self.company.slug,
-                        external_job_id=str(item_id),
-                        title=title,
-                        location_raw=", ".join(
-                            str(location.get(key, ""))
-                            for key in ("city", "region", "country")
-                            if location.get(key)
-                        ),
-                        description_raw=description,
-                        posted_at=_parse_datetime(item.get("releasedDate")),
-                        url=item.get("ref")
-                        or f"https://jobs.smartrecruiters.com/{identifier}/{item_id}",
-                    )
+                _append_raw_job(
+                    jobs,
+                    "SmartRecruiters",
+                    self.company.slug,
+                    item,
+                    source_company=self.company.slug,
+                    external_job_id=str(item_id),
+                    title=title,
+                    location_raw=", ".join(
+                        str(location.get(key, ""))
+                        for key in ("city", "region", "country")
+                        if location.get(key)
+                    ),
+                    description_raw=description,
+                    posted_at=_parse_datetime(item.get("releasedDate")),
+                    url=item.get("ref")
+                    or f"https://jobs.smartrecruiters.com/{identifier}/{item_id}",
                 )
             offset += len(content)
             if not content or offset >= int(payload.get("totalFound", offset)):
@@ -307,17 +327,19 @@ class WorkdaySource(JobSource):
                         detail_response.raise_for_status()
                         detail = detail_response.json().get("jobPostingInfo", {})
                         description = _html_text(detail.get("jobDescription") or description)
-                    jobs.append(
-                        RawJob(
-                            source_company=self.company.slug,
-                            external_job_id=external_path,
-                            title=title,
-                            location_raw=item.get("locationsText", ""),
-                            description_raw=description,
-                            posted_at=_parse_datetime(item.get("postedOn")),
-                            url=detail_url or f"https://{site}{external_path}",
-                            metadata={"workday": item},
-                        )
+                    _append_raw_job(
+                        jobs,
+                        "Workday",
+                        self.company.slug,
+                        item,
+                        source_company=self.company.slug,
+                        external_job_id=external_path,
+                        title=title,
+                        location_raw=item.get("locationsText", ""),
+                        description_raw=description,
+                        posted_at=_parse_datetime(item.get("postedOn")),
+                        url=detail_url or f"https://{site}{external_path}",
+                        metadata={"workday": item},
                     )
                 offset += len(postings)
                 if not postings or offset >= int(payload.get("total", offset)):
@@ -357,17 +379,19 @@ class JsonLdSource(JobSource):
                 location = json.dumps(location, ensure_ascii=False)
             identifier = item.get("identifier")
             identifier_value = identifier.get("value") if isinstance(identifier, dict) else None
-            jobs.append(
-                RawJob(
-                    source_company=self.company.slug,
-                    external_job_id=str(identifier_value or item.get("url", "")),
-                    title=title,
-                    location_raw=str(location),
-                    description_raw=_html_text(item.get("description")),
-                    posted_at=_parse_datetime(item.get("datePosted")),
-                    url=item.get("url") or str(self.company.careers_url),
-                    metadata={"jsonld": item},
-                )
+            _append_raw_job(
+                jobs,
+                "JSON-LD",
+                self.company.slug,
+                item,
+                source_company=self.company.slug,
+                external_job_id=str(identifier_value or item.get("url", "")),
+                title=title,
+                location_raw=str(location),
+                description_raw=_html_text(item.get("description")),
+                posted_at=_parse_datetime(item.get("datePosted")),
+                url=item.get("url") or str(self.company.careers_url),
+                metadata={"jsonld": item},
             )
         return jobs
 
