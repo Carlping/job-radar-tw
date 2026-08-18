@@ -4,6 +4,7 @@ import asyncio
 import logging
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
+from time import perf_counter
 
 import httpx
 
@@ -21,9 +22,21 @@ from .notifier import (
 from .resume import load_resume
 from .schedule import local_run_key
 from .sources import SourceRunner
-from .storage import JobPlan, MatchDecision, Storage
+from .storage import PERSIST_CHUNK_SIZE, JobIndexRow, JobPlan, MatchDecision, Storage
 
 logger = logging.getLogger(__name__)
+_STORAGE_CLASS = Storage
+
+PERSIST_PROGRESS_INTERVAL = 1000
+
+
+def _supports_batch_persistence(storage: Storage) -> bool:
+    return (
+        hasattr(storage, "prefetch_job_index")
+        and hasattr(storage, "persist_job_decisions_batch")
+        and getattr(storage.persist_job_decisions, "__func__", None)
+        is _STORAGE_CLASS.persist_job_decisions
+    )
 
 
 @dataclass
@@ -212,11 +225,65 @@ async def run_pipeline(
                 report.jobs_fetched += len(raw_jobs)
                 if company.source_verified and not raw_jobs:
                     report.zero_job_sources.append(company.name)
+                company_started = perf_counter()
+                use_batch = storage is not None and _supports_batch_persistence(storage)
+                job_index = storage.prefetch_job_index(company_id) if use_batch else {}
+                batch_items: list[tuple[RawJob, JobPlan, list[MatchDecision]]] = []
+                batch_matches: list[list[MatchedJob]] = []
+                persisted_jobs = 0
+                company_new = 0
+                company_changed = 0
+                company_unchanged = 0
+
+                def flush_batch() -> None:
+                    nonlocal company_changed
+                    nonlocal company_new
+                    nonlocal company_unchanged
+                    nonlocal persisted_jobs
+                    if not batch_items:
+                        return
+                    persisted = storage.persist_job_decisions_batch(
+                        company_id,
+                        run_id,
+                        batch_items,
+                    )
+                    for (_, plan, _), result, eligible_matches in zip(
+                        batch_items,
+                        persisted,
+                        batch_matches,
+                        strict=True,
+                    ):
+                        report.immediate_candidates += result.notifications_enqueued
+                        report.jobs_new += int(plan.is_new)
+                        report.jobs_changed += int(plan.changed and not plan.is_new)
+                        report.matches += len(eligible_matches)
+                        report.matched_jobs.extend(eligible_matches)
+                        company_new += int(plan.is_new)
+                        company_changed += int(plan.changed and not plan.is_new)
+                        company_unchanged += int(not plan.changed)
+                    persisted_jobs += len(persisted)
+                    if persisted_jobs % PERSIST_PROGRESS_INTERVAL == 0 or persisted_jobs == len(
+                        raw_jobs
+                    ):
+                        logger.info(
+                            "Persistence progress for %s: %d/%d jobs",
+                            company.slug,
+                            persisted_jobs,
+                            len(raw_jobs),
+                        )
+                    batch_items.clear()
+                    batch_matches.clear()
+
                 for raw in raw_jobs:
                     parsed = parse_job(raw)
                     observed_at = datetime.now(UTC)
                     plan = (
-                        storage.plan_job(company_id, raw)
+                        storage.plan_job_from_index(
+                            raw,
+                            job_index.get(raw.stable_external_id),
+                        )
+                        if use_batch
+                        else storage.plan_job(company_id, raw)
                         if storage
                         else JobPlan(
                             job_id=raw.stable_external_id,
@@ -226,7 +293,19 @@ async def run_pipeline(
                             previous_content_hash=None,
                         )
                     )
+                    if use_batch:
+                        job_index[raw.stable_external_id] = JobIndexRow(
+                            job_id=plan.job_id,
+                            content_hash=raw.content_hash,
+                            first_seen_at=plan.first_seen_at,
+                        )
                     if not plan.changed and not backfill:
+                        if use_batch:
+                            batch_items.append((raw, plan, []))
+                            batch_matches.append([])
+                            if len(batch_items) >= PERSIST_CHUNK_SIZE:
+                                flush_batch()
+                            continue
                         if storage:
                             storage.persist_job_decisions(
                                 company_id,
@@ -312,6 +391,12 @@ async def run_pipeline(
                         )
 
                     if storage:
+                        if use_batch:
+                            batch_items.append((raw, plan, decisions))
+                            batch_matches.append(eligible_matches)
+                            if len(batch_items) >= PERSIST_CHUNK_SIZE:
+                                flush_batch()
+                            continue
                         persisted = storage.persist_job_decisions(
                             company_id,
                             run_id,
@@ -327,8 +412,20 @@ async def run_pipeline(
                     if dry_run:
                         report.dry_run_matches.extend(eligible_matches)
                 if storage:
+                    if use_batch:
+                        flush_batch()
                     report.jobs_closed += storage.mark_missing(company_id, run_id)
                     storage.source_succeeded(company_id, run_id)
+                    logger.info(
+                        "Persisted company %s: jobs_fetched=%d new=%d changed=%d "
+                        "unchanged=%d elapsed_seconds=%.2f",
+                        company.slug,
+                        len(raw_jobs),
+                        company_new,
+                        company_changed,
+                        company_unchanged,
+                        perf_counter() - company_started,
+                    )
                 report.sources_succeeded += 1
 
             if notifier and storage:

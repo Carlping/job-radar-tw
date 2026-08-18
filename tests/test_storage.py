@@ -1,5 +1,5 @@
 import pytest
-from sqlalchemy import func, select
+from sqlalchemy import event, func, select
 
 from job_monitor.models import CompanyConfig, MatchResult, RawJob
 from job_monitor.storage import (
@@ -34,6 +34,92 @@ def raw(description="SQL"):
         description_raw=description,
         url="https://example.com/jobs/1",
     )
+
+
+def raw_job(external_job_id, description="SQL"):
+    return RawJob(
+        source_company="acme",
+        external_job_id=external_job_id,
+        title=f"Data Analyst {external_job_id}",
+        location_raw="Phoenix, AZ",
+        description_raw=description,
+        url=f"https://example.com/jobs/{external_job_id}",
+    )
+
+
+def match_decisions():
+    return [
+        MatchDecision(
+            profile_version="1",
+            result=MatchResult(profile="tech", score=0.84, eligible=True, tier="strong"),
+        )
+    ]
+
+
+def apply_jobs(db, company_id, run_id, raws, batched, decision_indexes=()):
+    decision_indexes = set(decision_indexes)
+    if not batched:
+        return [
+            db.persist_job_decisions(
+                company_id,
+                run_id,
+                item,
+                db.plan_job(company_id, item),
+                match_decisions() if index in decision_indexes else [],
+            )
+            for index, item in enumerate(raws)
+        ]
+    index = db.prefetch_job_index(company_id)
+    items = [
+        (
+            item,
+            db.plan_job_from_index(item, index.get(item.stable_external_id)),
+            match_decisions() if item_index in decision_indexes else [],
+        )
+        for item_index, item in enumerate(raws)
+    ]
+    return db.persist_job_decisions_batch(company_id, run_id, items)
+
+
+def semantic_snapshot(db):
+    with db.engine.connect() as conn:
+        job_rows = conn.execute(
+            select(
+                jobs.c.external_job_id,
+                jobs.c.title,
+                jobs.c.description_raw,
+                jobs.c.content_hash,
+                jobs.c.status,
+                jobs.c.missing_count,
+            ).order_by(jobs.c.external_job_id)
+        ).all()
+        version_rows = conn.execute(
+            select(
+                jobs.c.external_job_id,
+                job_versions.c.content_hash,
+                job_versions.c.payload,
+            )
+            .join(job_versions, job_versions.c.job_id == jobs.c.id)
+            .order_by(jobs.c.external_job_id, job_versions.c.content_hash)
+        ).all()
+        match_rows = conn.execute(
+            select(
+                jobs.c.external_job_id,
+                match_results.c.profile,
+                match_results.c.profile_version,
+                match_results.c.content_hash,
+                match_results.c.score,
+                match_results.c.eligible,
+                match_results.c.tier,
+            )
+            .join(match_results, match_results.c.job_id == jobs.c.id)
+            .order_by(
+                jobs.c.external_job_id,
+                match_results.c.profile,
+                match_results.c.content_hash,
+            )
+        ).all()
+    return job_rows, version_rows, match_rows
 
 
 def test_upsert_version_and_two_scan_close(tmp_path):
@@ -307,3 +393,94 @@ def test_dashboard_counts_application_pipeline(tmp_path):
     jobs = db.list_dashboard_jobs(days=30)
     assert jobs[0]["stage"] == "interview"
     assert jobs[0]["score"] == 0.84
+
+
+def test_batched_persistence_matches_single_job_rows_and_counters(tmp_path):
+    raws_first = [
+        raw_job("1", "SQL"),
+        raw_job("2", "Python"),
+        raw_job("3", "R"),
+    ]
+    raws_second = [
+        raw_job("1", "SQL changed"),
+        raw_job("2", "Python"),
+        raw_job("3", "R changed"),
+    ]
+
+    snapshots = []
+    result_flags = []
+    for batched in (False, True):
+        db = Storage(f"sqlite:///{tmp_path / f'{batched}.db'}", create_schema=True)
+        company_id = db.sync_company(company())
+        first_run = db.start_run(f"first-{batched}")
+        second_run = db.start_run(f"second-{batched}")
+        assert first_run and second_run
+
+        first_results = apply_jobs(
+            db,
+            company_id,
+            first_run,
+            raws_first,
+            batched,
+            decision_indexes={0, 1, 2},
+        )
+        second_results = apply_jobs(
+            db,
+            company_id,
+            second_run,
+            raws_second,
+            batched,
+            decision_indexes={0, 1, 2},
+        )
+        result_flags.append(
+            [
+                [(item.is_new, item.changed, item.notifications_enqueued) for item in results]
+                for results in (first_results, second_results)
+            ]
+        )
+        snapshots.append(semantic_snapshot(db))
+
+    assert result_flags[0] == result_flags[1]
+    assert snapshots[0] == snapshots[1]
+
+
+def test_batched_snapshot_mismatch_falls_back_to_single_job_persistence(tmp_path, monkeypatch):
+    db = Storage(f"sqlite:///{tmp_path / 'test.db'}", create_schema=True)
+    company_id = db.sync_company(company())
+    run_id = db.start_run("batch")
+    racing_run_id = db.start_run("racing")
+    assert run_id and racing_run_id
+
+    item = raw_job("raced")
+    stale_plan = db.plan_job(company_id, item)
+    db.upsert_job(company_id, racing_run_id, item)
+
+    fallback_calls = []
+    original_persist = db.persist_job_decisions
+
+    def fallback(*args, **kwargs):
+        fallback_calls.append(True)
+        return original_persist(*args, **kwargs)
+
+    monkeypatch.setattr(db, "persist_job_decisions", fallback)
+    with pytest.raises(RuntimeError, match="job changed while its match decision"):
+        db.persist_job_decisions_batch(company_id, run_id, [(item, stale_plan, [])])
+    assert fallback_calls == [True]
+
+
+def test_batched_persistence_sql_scales_by_chunk(tmp_path):
+    db = Storage(f"sqlite:///{tmp_path / 'test.db'}", create_schema=True)
+    company_id = db.sync_company(company())
+    run_id = db.start_run("batch")
+    assert run_id
+    raws = [raw_job(str(index)) for index in range(50)]
+    statements = []
+    event.listen(
+        db.engine,
+        "before_cursor_execute",
+        lambda *args: statements.append(args[2]),
+    )
+
+    apply_jobs(db, company_id, run_id, raws, batched=True)
+
+    assert len(statements) < len(raws) * 5
