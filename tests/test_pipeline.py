@@ -100,7 +100,7 @@ class FakeNotifier:
 
 
 @pytest.mark.asyncio
-async def test_backfill_applies_notification_gates_before_cap(monkeypatch):
+async def test_backfill_strong_matches_respect_notification_cap(monkeypatch):
     raw_jobs = [
         RawJob(
             source_company="acme",
@@ -108,7 +108,7 @@ async def test_backfill_applies_notification_gates_before_cap(monkeypatch):
             title=f"Reporting Analyst {index}",
             location_raw="Austin, TX",
             description_raw="Operational reporting",
-            posted_at=datetime(2025, 1, 1, tzinfo=UTC),
+            posted_at=datetime(2026, 6, 25, tzinfo=UTC),
             url=f"https://example.com/jobs/{index}",
         )
         for index in range(4)
@@ -149,7 +149,7 @@ async def test_backfill_applies_notification_gates_before_cap(monkeypatch):
         threshold=0.4,
         strong_threshold=0.9,
         weights={"title": 0.6, "location": 0.2, "seniority": 0.2},
-        title_terms=["never matches"],
+        title_terms=["reporting analyst"],
         domain_terms=[],
         skills=[],
     )
@@ -168,13 +168,14 @@ async def test_backfill_applies_notification_gates_before_cap(monkeypatch):
     )
 
     assert report.matches == 4
-    assert report.immediate_candidates == 0
-    assert report.notifications == 0
-    assert report.notifications_suppressed == 0
-    assert report.notifications_pending == 0
+    assert report.immediate_candidates == 3
+    assert report.notifications == 2
+    assert report.notifications_suppressed == 1
+    assert report.notifications_pending == 1
     assert len(storage.matches) == 4
-    assert len(storage.notifications) == 0
-    assert len(storage.outbox) == 0
+    assert len(storage.notifications) == 2
+    assert len(storage.outbox) == 1
+    assert all(item[0] != "job-0" for item in storage.notifications)
     assert storage.finished is not None
 
 
