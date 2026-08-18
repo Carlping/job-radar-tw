@@ -25,17 +25,13 @@ from .sources import SourceRunner
 from .storage import PERSIST_CHUNK_SIZE, JobIndexRow, JobPlan, MatchDecision, Storage
 
 logger = logging.getLogger(__name__)
-_STORAGE_CLASS = Storage
 
 PERSIST_PROGRESS_INTERVAL = 1000
 
 
 def _supports_batch_persistence(storage: Storage) -> bool:
-    return (
-        hasattr(storage, "prefetch_job_index")
-        and hasattr(storage, "persist_job_decisions_batch")
-        and getattr(storage.persist_job_decisions, "__func__", None)
-        is _STORAGE_CLASS.persist_job_decisions
+    return hasattr(storage, "prefetch_job_index") and hasattr(
+        storage, "persist_job_decisions_batch"
     )
 
 
@@ -61,6 +57,69 @@ class RunReport:
 
     def stats(self) -> dict[str, int]:
         return {key: value for key, value in self.__dict__.items() if isinstance(value, int)}
+
+
+@dataclass
+class CompanyBatchPersistence:
+    storage: Storage
+    company_id: str
+    run_id: str
+    company_slug: str
+    jobs_fetched: int
+    report: RunReport
+    items: list[tuple[RawJob, JobPlan, list[MatchDecision]]] = field(default_factory=list)
+    eligible_matches: list[list[MatchedJob]] = field(default_factory=list)
+    persisted_jobs: int = 0
+    jobs_new: int = 0
+    jobs_changed: int = 0
+    jobs_unchanged: int = 0
+
+    def add(
+        self,
+        raw: RawJob,
+        plan: JobPlan,
+        decisions: list[MatchDecision],
+        matches: list[MatchedJob],
+    ) -> None:
+        self.items.append((raw, plan, decisions))
+        self.eligible_matches.append(matches)
+        if len(self.items) >= PERSIST_CHUNK_SIZE:
+            self.flush()
+
+    def flush(self) -> None:
+        if not self.items:
+            return
+        persisted = self.storage.persist_job_decisions_batch(
+            self.company_id,
+            self.run_id,
+            self.items,
+        )
+        for (_, plan, _), result, eligible_matches in zip(
+            self.items,
+            persisted,
+            self.eligible_matches,
+            strict=True,
+        ):
+            self.report.immediate_candidates += result.notifications_enqueued
+            self.report.jobs_new += int(plan.is_new)
+            self.report.jobs_changed += int(plan.changed and not plan.is_new)
+            self.report.matches += len(eligible_matches)
+            self.report.matched_jobs.extend(eligible_matches)
+            self.jobs_new += int(plan.is_new)
+            self.jobs_changed += int(plan.changed and not plan.is_new)
+            self.jobs_unchanged += int(not plan.changed)
+        self.persisted_jobs += len(persisted)
+        if self.persisted_jobs % PERSIST_PROGRESS_INTERVAL == 0 or (
+            self.persisted_jobs == self.jobs_fetched
+        ):
+            logger.info(
+                "Persistence progress for %s: %d/%d jobs",
+                self.company_slug,
+                self.persisted_jobs,
+                self.jobs_fetched,
+            )
+        self.items.clear()
+        self.eligible_matches.clear()
 
 
 @dataclass(frozen=True)
@@ -228,51 +287,18 @@ async def run_pipeline(
                 company_started = perf_counter()
                 use_batch = storage is not None and _supports_batch_persistence(storage)
                 job_index = storage.prefetch_job_index(company_id) if use_batch else {}
-                batch_items: list[tuple[RawJob, JobPlan, list[MatchDecision]]] = []
-                batch_matches: list[list[MatchedJob]] = []
-                persisted_jobs = 0
-                company_new = 0
-                company_changed = 0
-                company_unchanged = 0
-
-                def flush_batch() -> None:
-                    nonlocal company_changed
-                    nonlocal company_new
-                    nonlocal company_unchanged
-                    nonlocal persisted_jobs
-                    if not batch_items:
-                        return
-                    persisted = storage.persist_job_decisions_batch(
-                        company_id,
-                        run_id,
-                        batch_items,
+                batch = (
+                    CompanyBatchPersistence(
+                        storage=storage,
+                        company_id=company_id,
+                        run_id=run_id,
+                        company_slug=company.slug,
+                        jobs_fetched=len(raw_jobs),
+                        report=report,
                     )
-                    for (_, plan, _), result, eligible_matches in zip(
-                        batch_items,
-                        persisted,
-                        batch_matches,
-                        strict=True,
-                    ):
-                        report.immediate_candidates += result.notifications_enqueued
-                        report.jobs_new += int(plan.is_new)
-                        report.jobs_changed += int(plan.changed and not plan.is_new)
-                        report.matches += len(eligible_matches)
-                        report.matched_jobs.extend(eligible_matches)
-                        company_new += int(plan.is_new)
-                        company_changed += int(plan.changed and not plan.is_new)
-                        company_unchanged += int(not plan.changed)
-                    persisted_jobs += len(persisted)
-                    if persisted_jobs % PERSIST_PROGRESS_INTERVAL == 0 or persisted_jobs == len(
-                        raw_jobs
-                    ):
-                        logger.info(
-                            "Persistence progress for %s: %d/%d jobs",
-                            company.slug,
-                            persisted_jobs,
-                            len(raw_jobs),
-                        )
-                    batch_items.clear()
-                    batch_matches.clear()
+                    if use_batch
+                    else None
+                )
 
                 for raw in raw_jobs:
                     parsed = parse_job(raw)
@@ -301,10 +327,7 @@ async def run_pipeline(
                         )
                     if not plan.changed and not backfill:
                         if use_batch:
-                            batch_items.append((raw, plan, []))
-                            batch_matches.append([])
-                            if len(batch_items) >= PERSIST_CHUNK_SIZE:
-                                flush_batch()
+                            batch.add(raw, plan, [], [])
                             continue
                         if storage:
                             storage.persist_job_decisions(
@@ -392,10 +415,7 @@ async def run_pipeline(
 
                     if storage:
                         if use_batch:
-                            batch_items.append((raw, plan, decisions))
-                            batch_matches.append(eligible_matches)
-                            if len(batch_items) >= PERSIST_CHUNK_SIZE:
-                                flush_batch()
+                            batch.add(raw, plan, decisions, eligible_matches)
                             continue
                         persisted = storage.persist_job_decisions(
                             company_id,
@@ -413,7 +433,7 @@ async def run_pipeline(
                         report.dry_run_matches.extend(eligible_matches)
                 if storage:
                     if use_batch:
-                        flush_batch()
+                        batch.flush()
                     report.jobs_closed += storage.mark_missing(company_id, run_id)
                     storage.source_succeeded(company_id, run_id)
                     logger.info(
@@ -421,9 +441,9 @@ async def run_pipeline(
                         "unchanged=%d elapsed_seconds=%.2f",
                         company.slug,
                         len(raw_jobs),
-                        company_new,
-                        company_changed,
-                        company_unchanged,
+                        batch.jobs_new if batch else 0,
+                        batch.jobs_changed if batch else 0,
+                        batch.jobs_unchanged if batch else 0,
                         perf_counter() - company_started,
                     )
                 report.sources_succeeded += 1
