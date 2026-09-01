@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Any
-from urllib.parse import urlsplit, urlunsplit
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from pydantic import BaseModel, ConfigDict, Field, HttpUrl, field_validator, model_validator
 
@@ -127,6 +127,38 @@ class CompanyConfig(BaseModel):
         return self
 
 
+TRACKING_QUERY_PARAMS = frozenset(
+    {
+        "fbclid",
+        "gclid",
+        "gh_src",
+        "mc_cid",
+        "mc_eid",
+        "msclkid",
+        "ref",
+        "referrer",
+        "source",
+        "src",
+        "trk",
+    }
+)
+
+
+def _canonical_query(query: str) -> str:
+    """Keep the query parameters that identify a posting, drop tracking noise.
+
+    Some boards address a posting entirely through the query string (Greenhouse
+    proxies such as ``https://instacart.careers/job/?gh_jid=123``), so dropping
+    the whole query would collapse every posting onto one URL.
+    """
+    kept = [
+        (key, value)
+        for key, value in parse_qsl(query, keep_blank_values=True)
+        if key.lower() not in TRACKING_QUERY_PARAMS and not key.lower().startswith("utm_")
+    ]
+    return urlencode(sorted(kept))
+
+
 class RawJob(BaseModel):
     source_company: str
     external_job_id: str | None = None
@@ -142,7 +174,13 @@ class RawJob(BaseModel):
     def canonical_url(self) -> str:
         parts = urlsplit(str(self.url))
         return urlunsplit(
-            (parts.scheme.lower(), parts.netloc.lower(), parts.path.rstrip("/"), "", "")
+            (
+                parts.scheme.lower(),
+                parts.netloc.lower(),
+                parts.path.rstrip("/"),
+                _canonical_query(parts.query),
+                "",
+            )
         )
 
     @property
