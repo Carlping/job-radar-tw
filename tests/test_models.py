@@ -9,7 +9,7 @@ def test_fallback_id_and_canonical_url_are_stable():
         source_company="acme",
         title="Data Analyst",
         location_raw="Phoenix, AZ",
-        url="https://example.com/jobs/1?ref=foo",
+        url="https://example.com/jobs/1?ref=foo&utm_source=newsletter",
     )
     second = RawJob(
         source_company="acme",
@@ -19,6 +19,36 @@ def test_fallback_id_and_canonical_url_are_stable():
     )
     assert first.stable_external_id == second.stable_external_id
     assert first.canonical_url == "https://example.com/jobs/1"
+
+
+def test_canonical_url_keeps_identifying_query_parameters():
+    jobs = [
+        RawJob(
+            source_company="instacart",
+            title="Data Scientist",
+            url=f"https://instacart.careers/job/?gh_jid={jid}&gh_src=ext",
+        )
+        for jid in ("7144697", "7658241")
+    ]
+    assert [job.canonical_url for job in jobs] == [
+        "https://instacart.careers/job?gh_jid=7144697",
+        "https://instacart.careers/job?gh_jid=7658241",
+    ]
+    assert jobs[0].content_hash != jobs[1].content_hash
+
+
+def test_canonical_url_ignores_query_parameter_order():
+    first = RawJob(
+        source_company="acme",
+        title="Data Analyst",
+        url="https://example.com/job?gh_jid=1&lang=en",
+    )
+    second = RawJob(
+        source_company="acme",
+        title="Data Analyst",
+        url="https://example.com/job?lang=en&gh_jid=1",
+    )
+    assert first.canonical_url == second.canonical_url
 
 
 def test_description_change_changes_content_hash():
