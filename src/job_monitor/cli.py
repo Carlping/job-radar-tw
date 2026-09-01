@@ -3,12 +3,15 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+from datetime import UTC, datetime
+from pathlib import Path
 from typing import Annotated
 
 import httpx
 import typer
 
 from .config import Settings, load_candidate, load_companies, load_preferences, load_profiles
+from .handoff import build_handoff, render_json, render_markdown
 from .ndx import fetch_ndx_constituents
 from .notifier import TelegramNotifier, render_job_message
 from .onboarding import (
@@ -306,6 +309,65 @@ def init_db() -> None:
         typer.echo("Database schema initialized; PostgreSQL RLS enabled.")
     else:
         typer.echo("Database schema initialized.")
+
+
+@app.command("export-handoff")
+def export_handoff(
+    out: Path = typer.Option(
+        Path("handoff/latest.md"), "--out", help="Markdown handoff destination"
+    ),
+    json_out: Path | None = typer.Option(
+        Path("handoff/latest.json"), "--json-out", help="JSON handoff destination"
+    ),
+    days: int = typer.Option(7, help="Only include jobs first seen within this many days"),
+    limit: int = typer.Option(40, help="Maximum number of jobs to export"),
+    min_score: float = typer.Option(0.0, help="Minimum match score to export"),
+    include_stretch: bool = typer.Option(
+        True, help="Include reach jobs (bucket=stretch) alongside target jobs"
+    ),
+) -> None:
+    """Write the open job queue to a handoff document for an external agent.
+
+    Only active postings that are still at the `recommended` stage and whose match was scored
+    against their current content are exported. Resumes, credentials, application notes, and
+    raw descriptions are never included.
+    """
+    settings = Settings()
+    if not settings.database_url:
+        raise typer.BadParameter("DATABASE_URL is required")
+    storage = Storage(settings.database_url)
+    run = storage.latest_run()
+    reference = run["finished_at"] if run else None
+    if isinstance(reference, datetime) and reference.tzinfo is None:
+        reference = reference.replace(tzinfo=UTC)
+    buckets: tuple[str, ...] = ("target", "stretch") if include_stretch else ("target",)
+    jobs = storage.list_handoff_jobs(
+        days=days,
+        limit=limit,
+        buckets=buckets,
+        min_score=min_score,
+        now=reference,
+    )
+    payload = build_handoff(jobs, run, window_days=days, buckets=buckets)
+
+    written = []
+    for path, content in ((out, render_markdown(payload)), (json_out, render_json(payload))):
+        if path is None:
+            continue
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content, encoding="utf-8")
+        written.append(str(path))
+    typer.echo(
+        json.dumps(
+            {
+                "jobs": payload["counts"]["total"],
+                "content_hash": payload["content_hash"],
+                "source_run": payload["source_run"]["run_key"],
+                "written": written,
+            },
+            ensure_ascii=False,
+        )
+    )
 
 
 @app.command("telegram-test")

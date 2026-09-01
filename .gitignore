@@ -25,3 +25,4 @@ config/resume.*
 !config/resume.example.md
 config/candidate.yml
 cloudflare/public/
+handoff/

@@ -209,6 +209,14 @@ APPLICATION_STAGES = {
 PERSIST_CHUNK_SIZE = 200
 
 
+def _handoff_rank(item: Mapping[str, Any]) -> tuple[float, str]:
+    return (-float(item["score"]), str(item["profile"]))
+
+
+def _handoff_order(item: Mapping[str, Any]) -> tuple[float, str, str]:
+    return (-float(item["score"]), str(item["company_slug"]), str(item["job_id"]))
+
+
 def normalize_database_url(url: str) -> str:
     if url.startswith("postgresql://"):
         return "postgresql+psycopg://" + url.removeprefix("postgresql://")
@@ -1592,13 +1600,127 @@ class Storage:
                     update(applications).where(applications.c.job_id == job_id).values(**values)
                 )
             else:
-                conn.execute(insert(applications).values(job_id=job_id, notes=notes, **values))
+                conn.execute(insert(applications).values(job_id=job_id, **values))
 
             return dict(
                 conn.execute(select(applications).where(applications.c.job_id == job_id))
                 .mappings()
                 .one()
             )
+
+    def latest_run(
+        self, statuses: tuple[str, ...] = ("success", "partial")
+    ) -> dict[str, Any] | None:
+        """Return the most recently finished run whose status is in `statuses`."""
+        stmt = (
+            select(
+                source_runs.c.run_key,
+                source_runs.c.status,
+                source_runs.c.finished_at,
+                source_runs.c.stats,
+            )
+            .where(source_runs.c.status.in_(statuses), source_runs.c.finished_at.is_not(None))
+            .order_by(source_runs.c.finished_at.desc(), source_runs.c.run_key.desc())
+            .limit(1)
+        )
+        with self.engine.connect() as conn:
+            row = conn.execute(stmt).mappings().one_or_none()
+        return dict(row) if row else None
+
+    def list_handoff_jobs(
+        self,
+        days: int = 7,
+        limit: int = 40,
+        buckets: tuple[str, ...] = ("target", "stretch"),
+        min_score: float = 0.0,
+        now: datetime | None = None,
+    ) -> list[dict[str, Any]]:
+        """Return active, not-yet-actioned jobs with a match for their current content.
+
+        Only match rows whose `content_hash` equals the job's current `content_hash` are
+        considered, so a stale score from an earlier version of a posting is never exported.
+        The winning match per job is the highest-scoring one, tie-broken by profile name.
+        Pass `now` to make the window boundary independent of wall-clock time.
+        """
+        days = max(1, min(days, 365))
+        limit = max(1, min(limit, 500))
+        since = (now or datetime.now(UTC)) - timedelta(days=days)
+        stage_expr = func.coalesce(applications.c.stage, "recommended")
+
+        stmt = (
+            select(
+                jobs.c.id.label("job_id"),
+                jobs.c.title,
+                jobs.c.location_raw.label("location"),
+                jobs.c.canonical_url.label("url"),
+                jobs.c.first_seen_at,
+                jobs.c.source_posted_at,
+                jobs.c.content_hash,
+                companies.c.slug.label("company_slug"),
+                companies.c.name.label("company"),
+                companies.c.industry,
+                match_results.c.profile,
+                match_results.c.score,
+                match_results.c.tier,
+                match_results.c.details,
+            )
+            .select_from(
+                jobs.join(companies, companies.c.id == jobs.c.company_id)
+                .join(
+                    match_results,
+                    and_(
+                        match_results.c.job_id == jobs.c.id,
+                        match_results.c.content_hash == jobs.c.content_hash,
+                        match_results.c.eligible.is_(True),
+                    ),
+                )
+                .outerjoin(applications, applications.c.job_id == jobs.c.id)
+            )
+            .where(
+                jobs.c.status == "active",
+                jobs.c.first_seen_at >= since,
+                stage_expr == "recommended",
+                match_results.c.score >= min_score,
+            )
+        )
+
+        with self.engine.connect() as conn:
+            rows = conn.execute(stmt).mappings().all()
+
+        winners: dict[str, dict[str, Any]] = {}
+        for row in rows:
+            details = row["details"] if isinstance(row["details"], Mapping) else {}
+            bucket = str(details.get("bucket", "target"))
+            if bucket not in buckets:
+                continue
+            candidate = {
+                "job_id": row["job_id"],
+                "title": row["title"],
+                "company": row["company"],
+                "company_slug": row["company_slug"],
+                "industry": row["industry"],
+                "location": row["location"],
+                "url": row["url"],
+                "first_seen_at": row["first_seen_at"],
+                "source_posted_at": row["source_posted_at"],
+                "content_hash": row["content_hash"],
+                "profile": row["profile"],
+                "score": float(row["score"]),
+                "tier": row["tier"],
+                "bucket": bucket,
+                "fit": details.get("fit"),
+                "reach": details.get("reach"),
+                "level": details.get("level"),
+                "required_years_min": details.get("required_years_min"),
+                "reasons": list(details.get("reasons") or []),
+                "gaps": list(details.get("gaps") or []),
+            }
+            current = winners.get(candidate["job_id"])
+            if current is None or _handoff_rank(candidate) < _handoff_rank(current):
+                winners[candidate["job_id"]] = candidate
+
+        ordered = sorted(winners.values(), key=_handoff_order)
+        return ordered[:limit]
 
     def dashboard_snapshot(self, days: int = 30) -> dict[str, Any]:
         days = max(1, min(days, 365))
