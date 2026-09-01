@@ -213,6 +213,25 @@ ATS endpoint 可能改版。先停用該來源，再以 `uv run monitor sources 
 
 輸出是資料庫狀態的純函數——時間戳取自最後一次成功的 run，而不是匯出當下的時鐘，所以資料沒變時 `content_hash` 與檔案內容都完全相同，可以安全地在排程中 commit（沒有 diff 就不需要 commit）。
 
+### 接到本機的 coding agent
+
+分工是：這個雷達負責**廣度與去噪**（每天固定掃完所有來源、擋掉不合理的職級與不符硬性條件的職缺），本機 agent 負責**深度與個人化**（公司研究、客製履歷、寫 cover letter、實際投遞）。單靠 agent 自己上網搜尋，廣度與一致性都會受限於當次對話。
+
+最省事的接法是用 git 當傳輸層，agent 端不需要任何憑證：
+
+1. 在排程 workflow 的 `monitor run` 之後加一步 `monitor export-handoff`，並把 `handoff/` commit 回你的 repo（該 job 需要 `contents: write`；`git diff --cached --quiet` 時不要 commit）。
+2. 本機另外開一份**只讀用途**的 clone，不要在裡面改東西。
+3. 在 agent 的 prompt／skill 開頭加入：先 `git pull --ff-only`，再讀 `handoff/latest.md`，以這份清單為主要來源，只在不足時才自行上網補搜。`handoff/latest.json` 用於程式化篩選（例如只取 `bucket: target`）。
+
+```bash
+git -C ~/job-radar-handoff pull --ff-only
+cat ~/job-radar-handoff/handoff/latest.md
+```
+
+如果你的職缺清單與履歷是私有的，建議把設定與 handoff 放在另一個 private repo，只安裝這個公開套件來執行（`pip install "job-radar-tw @ git+https://github.com/<owner>/job-radar-tw@<tag>"`），這樣個人資料不會進公開 repo。
+
+要注意的取捨：agent 逐一做公司研究與客製履歷本來就慢（每個職缺數分鐘量級），所以先用 `bucket` 與 `gaps` 決定處理順序，而不是整份清單一次餵進去；另外 agent 端的投遞流程高度個人化（履歷版本、要不要寫 cover letter、哪些公司優先），handoff 只提供事實欄位，這些規則要寫在你自己的 prompt 裡。也請讓 agent 檢查 `source_run` 的時間，過舊就代表排程沒跑成功，而不是「今天沒有職缺」。
+
 ## Dashboard（選用）
 
 只想收 Telegram 不需要部署 dashboard。本機查看可執行：
