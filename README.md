@@ -168,6 +168,7 @@ uv run monitor sources candidates
 uv run monitor init-db
 uv run monitor doctor --send-telegram
 uv run monitor web
+uv run monitor export-handoff [--days 7] [--limit 40] [--out handoff/latest.md]
 ```
 
 新加入的來源應先保持 disabled。確認 `uv run monitor sources verify --company COMPANY_SLUG --status all` 抓得到資料後，再加上 `--promote`；通過驗證的項目才會被寫成 `enabled: true` 與 `source_verified: true`。
@@ -203,6 +204,14 @@ uv run monitor web
 **某家公司突然抓到 0 筆或連續失敗**
 
 ATS endpoint 可能改版。先停用該來源，再以 `uv run monitor sources verify --company COMPANY_SLUG --status all` 檢查，不要用繞過登入、CAPTCHA 或網站限制的方式修復。
+
+## 交給其他 agent 接手（選用）
+
+`monitor export-handoff` 會把目前的職缺佇列寫成 `handoff/latest.md`（給 LLM 讀）與 `handoff/latest.json`（給程式篩選），適合本機的 Claude／Codex 之類的 agent 接著做公司研究、客製履歷與投遞。
+
+只輸出「還沒處理」的職缺：`status: active`、application stage 仍是 `recommended`、而且評分對應職缺的**當前**內容（職缺改版後的舊分數不會被匯出）。每筆包含 score、bucket、tier、命中理由、`gaps`（尚未滿足的硬性條件）與連結；不含履歷、credentials、application notes 或 JD 原文。
+
+輸出是資料庫狀態的純函數——時間戳取自最後一次成功的 run，而不是匯出當下的時鐘，所以資料沒變時 `content_hash` 與檔案內容都完全相同，可以安全地在排程中 commit（沒有 diff 就不需要 commit）。
 
 ## Dashboard（選用）
 
