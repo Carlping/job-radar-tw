@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "job-radar-tw"
-version = "0.1.0"
+version = "0.3.0"
 description = "Self-hosted career-site job monitor with Telegram alerts"
 readme = "README.md"
 requires-python = ">=3.12"

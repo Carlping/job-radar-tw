@@ -172,6 +172,7 @@ uv run monitor sources candidates
 uv run monitor init-db
 uv run monitor doctor --send-telegram
 uv run monitor web
+uv run monitor export-handoff [--days 7] [--limit 40] [--out handoff/latest.md]
 ```
 
 Keep a newly added source disabled at first. After `uv run monitor sources verify --company COMPANY_SLUG --status all` fetches valid data, repeat it with `--promote`; only a verified source is written back as `enabled: true` and `source_verified: true`.
@@ -207,6 +208,33 @@ Enable workflows in the **Actions** tab. GitHub may also disable schedules in a 
 **A company suddenly returns zero jobs or keeps failing**
 
 Its ATS endpoint may have changed. Disable the source, then check it with `uv run monitor sources verify --company COMPANY_SLUG --status all`. Do not work around logins, CAPTCHA, or site access restrictions.
+
+## Hand off to another agent (optional)
+
+`monitor export-handoff` writes the current job queue to `handoff/latest.md` (for an LLM to read) and `handoff/latest.json` (for programmatic filtering), so a local agent such as Claude or Codex can take over company research, résumé tailoring, and applying.
+
+Only unhandled jobs are exported: `status: active`, application stage still `recommended`, and a score that belongs to the job's **current** content (a stale score from before the posting was edited is never exported). Each entry carries the score, bucket, tier, matched reasons, `gaps` (hard requirements you do not meet yet), and the link. It never contains your résumé, credentials, application notes, or the raw job description.
+
+The output is a pure function of the database state — timestamps come from the last successful run rather than the exporter's clock — so unchanged data yields an identical `content_hash` and identical files, which makes it safe to commit from a schedule (no diff, no commit).
+
+### Wiring it into a local coding agent
+
+The division of labour: the radar provides **breadth and noise removal** (every source swept on a fixed schedule, implausible seniority levels and unmet hard requirements filtered out), while the local agent provides **depth and personalisation** (company research, tailored résumés, cover letters, actually applying). An agent searching the web on its own is limited in breadth and inconsistent from session to session.
+
+The least-effort integration uses git as the transport, so the agent needs no credentials at all:
+
+1. Add a `monitor export-handoff` step after `monitor run` in your scheduled workflow and commit `handoff/` back to your repository (the job needs `contents: write`; skip the commit when `git diff --cached --quiet`).
+2. Keep a separate **read-only** clone on your machine and never edit anything inside it.
+3. At the top of your agent's prompt or skill: `git pull --ff-only`, then read `handoff/latest.md`, treat that list as the primary source, and only search the web when it is insufficient. Use `handoff/latest.json` for programmatic filtering (for example, `bucket: target` only).
+
+```bash
+git -C ~/job-radar-handoff pull --ff-only
+cat ~/job-radar-handoff/handoff/latest.md
+```
+
+If your company list and résumé are private, keep the configuration and the handoff in a separate private repository and install this public package to run it (`pip install "job-radar-tw @ git+https://github.com/<owner>/job-radar-tw@<tag>"`), so personal data never enters the public repository.
+
+The trade-offs worth knowing: per-job company research and résumé tailoring are inherently slow (minutes per job), so use `bucket` and `gaps` to decide the order of work instead of feeding the whole list in at once. The applying workflow is also highly personal (which résumé version, whether to write a cover letter, which companies come first) — the handoff only supplies factual fields, so those rules belong in your own prompt. Have the agent check the `source_run` timestamp too: a stale one means the schedule failed, not that there are no jobs today.
 
 ## Dashboard (optional)
 
