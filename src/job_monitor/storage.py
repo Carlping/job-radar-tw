@@ -1534,9 +1534,7 @@ class Storage:
         cutoff = datetime.now(UTC) - timedelta(hours=hours)
         with self.engine.connect() as conn:
             rows = conn.execute(
-                select(source_runs.c.errors).where(
-                    source_runs.c.finished_at >= cutoff
-                )
+                select(source_runs.c.errors).where(source_runs.c.finished_at >= cutoff)
             ).scalars()
             for errors in rows:
                 if not isinstance(errors, list):
