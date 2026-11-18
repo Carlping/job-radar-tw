@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import html
 import logging
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -255,6 +256,7 @@ async def run_pipeline(
                 *(_fetch_company_source(runner, context) for context in source_contexts)
             )
 
+            pending_workday_alerts: dict[str, list[tuple[str, int, dict]]] = {}
             for source_result in source_results:
                 if storage:
                     storage.assert_active_run(run_id)
@@ -281,14 +283,21 @@ async def run_pipeline(
                         and storage is not None
                         and not storage.recently_alerted_source(company.slug, kind)
                     ):
-                        sent = await _try_send_notification(
-                            notifier,
-                            render_failure_alert(company.name, failures, str(source_result.error)),
-                            report,
-                            context=f"source failure alert for {company.slug}",
-                        )
-                        if sent:
-                            failure_record["alert_sent"] = True
+                        if kind.startswith("workday_"):
+                            pending_workday_alerts.setdefault(kind, []).append(
+                                (company.name, failures, failure_record)
+                            )
+                        else:
+                            sent = await _try_send_notification(
+                                notifier,
+                                render_failure_alert(
+                                    company.name, failures, str(source_result.error)
+                                ),
+                                report,
+                                context=f"source failure alert for {company.slug}",
+                            )
+                            if sent:
+                                failure_record["alert_sent"] = True
                     continue
 
                 raw_jobs = source_result.raw_jobs
@@ -472,6 +481,29 @@ async def run_pipeline(
                     )
                 report.sources_succeeded += 1
 
+            # One message per Workday failure category, regardless of how many
+            # tenants hit the same protection in this run.
+            for kind, affected in pending_workday_alerts.items():
+                names = "\n".join(
+                    f"• {html.escape(name)}（{failures} 次）"
+                    for name, failures, _ in affected[:20]
+                )
+                extra = (
+                    f"\n另外 {len(affected) - 20} 家公司"
+                    if len(affected) > 20
+                    else ""
+                )
+                sent = await _try_send_notification(
+                    notifier,
+                    f"⚠️ Workday 來源連續失敗：{html.escape(kind)}\n"
+                    f"影響 {len(affected)} 家公司：\n{names}{extra}",
+                    report,
+                    context=f"aggregated source failure alert for {kind}",
+                )
+                if sent:
+                    for _, _, record in affected:
+                        record["alert_sent"] = True
+
             if notifier and storage:
                 pending_before_delivery = storage.pending_notification_count()
                 queued = storage.claim_pending_notifications(
@@ -504,16 +536,9 @@ async def run_pipeline(
                         report.notifications += 1
                 report.notifications_pending = storage.pending_notification_count()
 
-            if notifier and report.sources_attempted and not report.sources_succeeded:
-                await _try_send_notification(
-                    notifier,
-                    "🚨 職缺雷達本次執行全部來源失敗\n"
-                    + "\n".join(
-                        f"{item['company']}: {item['error'][:200]}" for item in report.errors
-                    ),
-                    report,
-                    context="all sources failed alert",
-                )
+            # The daily summary already reports an all-source outage. Avoid
+            # sending the same incident again as a separate Telegram alert;
+            # GitHub Actions will independently flag the failed workflow.
             if notifier:
                 await _try_send_notification(
                     notifier,
