@@ -66,9 +66,7 @@ async def test_failure_alerts_aggregate_and_deduplicate_then_recover(tmp_path, m
         assert report.sources_succeeded == 0
         assert len(report.errors) == 2
 
-    incident_alerts = [
-        msg for msg in notifier.messages if "⚠️ Workday 來源連續失敗" in msg
-    ]
+    incident_alerts = [msg for msg in notifier.messages if "⚠️ Workday 來源連續失敗" in msg]
     assert len(incident_alerts) == 1
     assert "影響 2 家公司" in incident_alerts[0]
     assert "ACME" in incident_alerts[0]
@@ -80,18 +78,11 @@ async def test_failure_alerts_aggregate_and_deduplicate_then_recover(tmp_path, m
 
         rows = list(conn.execute(source_runs.select()).mappings())
         assert len(rows) == 4
-        flagged = [
-            item
-            for row in rows
-            for item in row["errors"]
-            if item.get("alert_sent")
-        ]
+        flagged = [item for row in rows for item in row["errors"] if item.get("alert_sent")]
         assert len(flagged) == 2
 
     FakeWorkdayRunner.blocked = False
-    recovered = await pipeline.run_pipeline(
-        settings, companies, {}, prefs, run_key="recovery-1"
-    )
+    recovered = await pipeline.run_pipeline(settings, companies, {}, prefs, run_key="recovery-1")
     assert recovered.sources_succeeded == 2
     recovery_alerts = [msg for msg in notifier.messages if "職缺來源已恢復" in msg]
     assert len(recovery_alerts) == 1
