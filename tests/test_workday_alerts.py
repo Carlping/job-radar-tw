@@ -36,6 +36,7 @@ def company(slug):
         ats_config={
             "endpoint": f"https://{slug}.wd1.myworkdayjobs.com/wday/cxs/{slug}/External/jobs",
             "site": f"{slug}.wd1.myworkdayjobs.com",
+            "detail_base_url": f"https://{slug}.wd1.myworkdayjobs.com/en-US/External",
         },
         industry="healthcare",
         profiles=["healthcare"],
