@@ -257,6 +257,7 @@ async def run_pipeline(
             )
 
             pending_workday_alerts: dict[str, list[tuple[str, int, dict]]] = {}
+            recovered_sources: list[tuple[str, int]] = []
             for source_result in source_results:
                 if storage:
                     storage.assert_active_run(run_id)
@@ -462,13 +463,7 @@ async def run_pipeline(
                         and notifier is not None
                         and storage.recently_alerted_source(company.slug, hours=720)
                     ):
-                        await _try_send_notification(
-                            notifier,
-                            f"✅ 職缺來源已恢復\\n{company.name}\\n"
-                            f"先前連續失敗：{previous_failures} 次",
-                            report,
-                            context=f"source recovery alert for {company.slug}",
-                        )
+                        recovered_sources.append((company.name, previous_failures))
                     logger.info(
                         "Persisted company %s: jobs_fetched=%d new=%d changed=%d "
                         "unchanged=%d elapsed_seconds=%.2f",
@@ -480,6 +475,23 @@ async def run_pipeline(
                         perf_counter() - company_started,
                     )
                 report.sources_succeeded += 1
+
+            if recovered_sources:
+                names = "\n".join(
+                    f"• {html.escape(name)}（先前失敗 {failures} 次）"
+                    for name, failures in recovered_sources[:20]
+                )
+                extra = (
+                    f"\n另外 {len(recovered_sources) - 20} 家公司"
+                    if len(recovered_sources) > 20
+                    else ""
+                )
+                await _try_send_notification(
+                    notifier,
+                    f"✅ 職缺來源已恢復：{len(recovered_sources)} 家\n{names}{extra}",
+                    report,
+                    context="aggregated source recovery alert",
+                )
 
             # One message per Workday failure category, regardless of how many
             # tenants hit the same protection in this run.
