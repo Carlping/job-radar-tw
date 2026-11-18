@@ -530,10 +530,13 @@ class SourceRunner:
     async def fetch(self, company: CompanyConfig) -> list[RawJob]:
         domain = httpx.URL(str(company.careers_url)).host or company.slug
         lock = self.domain_locks.setdefault(domain, asyncio.Lock())
+        if company.ats_type == AtsType.WORKDAY:
+            # Wait outside the global semaphore so blocked Workday tenants
+            # do not starve Greenhouse, Lever, or other healthy ATS sources.
+            async with self.workday_lock:
+                async with self.semaphore, lock:
+                    return await WorkdaySource(company, self.client).fetch()
         async with self.semaphore, lock:
-            source = SOURCE_CLASSES[company.ats_type](company, self.client)
-            if company.ats_type == AtsType.WORKDAY:
-                # Different Workday tenants still share the Actions runner IP.
-                async with self.workday_lock:
-                    return await source.fetch()
-            return await source.fetch()
+            return await SOURCE_CLASSES[company.ats_type](
+                company, self.client
+            ).fetch()
