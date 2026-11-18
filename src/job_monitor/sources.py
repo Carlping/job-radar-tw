@@ -5,6 +5,7 @@ import json
 import logging
 from abc import ABC, abstractmethod
 from datetime import UTC, datetime
+from email.utils import parsedate_to_datetime
 from typing import Any
 
 import httpx
@@ -84,6 +85,54 @@ def _append_raw_job(
 
 class SourceError(RuntimeError):
     pass
+
+
+class WorkdayBlocked(SourceError):
+    """A Workday request blocked by rate limits or an anti-bot challenge."""
+
+    def __init__(
+        self,
+        status_code: int,
+        method: str,
+        kind: str,
+        retry_after: float | None = None,
+    ):
+        self.kind = kind
+        self.retry_after = retry_after
+        retry_hint = f"; retry_after={retry_after:g}s" if retry_after is not None else ""
+        super().__init__(
+            f"Workday {method} HTTP {status_code} ({kind}){retry_hint}"
+        )
+
+
+def _retry_after_seconds(value: str | None) -> float | None:
+    if not value:
+        return None
+    try:
+        return max(0.0, float(value))
+    except ValueError:
+        try:
+            target = parsedate_to_datetime(value)
+        except (TypeError, ValueError, OverflowError):
+            return None
+        if target.tzinfo is None:
+            target = target.replace(tzinfo=UTC)
+        return max(0.0, (target - datetime.now(UTC)).total_seconds())
+
+
+def source_error_kind(exc: BaseException) -> str:
+    """Stable, low-cardinality error category used for alert deduplication."""
+    if isinstance(exc, WorkdayBlocked):
+        return f"workday_{exc.kind}"
+    if isinstance(exc, httpx.HTTPStatusError):
+        return f"http_{exc.response.status_code}"
+    if isinstance(exc, httpx.TimeoutException):
+        return "timeout"
+    if isinstance(exc, httpx.RequestError):
+        return "network"
+    if isinstance(exc, SourceError):
+        return "invalid_source_response"
+    return type(exc).__name__.lower()[:80]
 
 
 class JobSource(ABC):
@@ -270,6 +319,57 @@ class SmartRecruitersSource(JobSource):
 
 
 class WorkdaySource(JobSource):
+    # Be polite to the Workday tenant. Do not attempt to defeat challenges.
+    REQUEST_SPACING_SECONDS = 1.0
+    RATE_LIMIT_RETRIES = 1
+    MAX_RETRY_AFTER_SECONDS = 30.0
+
+    def __init__(self, company: CompanyConfig, client: httpx.AsyncClient):
+        super().__init__(company, client)
+        self._next_request_at = 0.0
+
+    async def _request(self, method: str, url: str, **kwargs: Any) -> httpx.Response:
+        for attempt in range(self.RATE_LIMIT_RETRIES + 1):
+            loop = asyncio.get_running_loop()
+            delay = self._next_request_at - loop.time()
+            if delay > 0:
+                await asyncio.sleep(delay)
+            self._next_request_at = loop.time() + self.REQUEST_SPACING_SECONDS
+            response = await self.client.request(method, url, **kwargs)
+            challenge = response.headers.get("cf-mitigated", "").lower() == "challenge"
+            if challenge or response.status_code == 429:
+                kind = "cloudflare_challenge" if challenge else "rate_limited"
+                retry_after = _retry_after_seconds(response.headers.get("retry-after"))
+                blocked = WorkdayBlocked(
+                    response.status_code, method, kind, retry_after
+                )
+                logger.warning(
+                    "Workday blocked %s for %s: kind=%s status=%d "
+                    "retry_after=%s content_type=%s",
+                    method,
+                    self.company.slug,
+                    kind,
+                    response.status_code,
+                    retry_after,
+                    response.headers.get("content-type", ""),
+                )
+                if (
+                    challenge
+                    or attempt >= self.RATE_LIMIT_RETRIES
+                    or (
+                        retry_after is not None
+                        and retry_after > self.MAX_RETRY_AFTER_SECONDS
+                    )
+                ):
+                    raise blocked
+                await asyncio.sleep(
+                    retry_after if retry_after is not None else 5.0
+                )
+                continue
+            response.raise_for_status()
+            return response
+        raise AssertionError("unreachable Workday retry state")
+
     async def fetch(self) -> list[RawJob]:
         cfg = self.company.ats_config
         endpoint = cfg["endpoint"]
@@ -277,12 +377,13 @@ class WorkdaySource(JobSource):
         limit = int(cfg.get("limit", 20))
         jobs: list[RawJob] = []
         seen: set[str] = set()
+        detail_blocked = False
         search_texts = cfg.get("search_texts") or [""]
         for search_text in search_texts:
             offset = 0
             while True:
-                response = await self.client.post(
-                    endpoint,
+                response = await self._request(
+                    "POST", endpoint,
                     json={
                         "appliedFacets": {},
                         "limit": limit,
@@ -290,7 +391,6 @@ class WorkdaySource(JobSource):
                         "searchText": search_text,
                     },
                 )
-                response.raise_for_status()
                 payload = response.json()
                 if not isinstance(payload, dict) or not isinstance(
                     payload.get("jobPostings"), list
@@ -320,13 +420,27 @@ class WorkdaySource(JobSource):
                         description = " ".join(str(value) for value in bullet_fields)
                     else:
                         description = str(bullet_fields)
-                    if cfg.get("detail_api_base"):
-                        detail_response = await self.client.get(
-                            cfg["detail_api_base"].rstrip("/") + external_path
-                        )
-                        detail_response.raise_for_status()
-                        detail = detail_response.json().get("jobPostingInfo", {})
-                        description = _html_text(detail.get("jobDescription") or description)
+                    if cfg.get("detail_api_base") and not detail_blocked:
+                        try:
+                            detail_response = await self._request(
+                                "GET",
+                                cfg["detail_api_base"].rstrip("/") + external_path,
+                            )
+                        except WorkdayBlocked as exc:
+                            # Search listings are complete; retain the bullet-field
+                            # summaries instead of dropping the whole company.
+                            detail_blocked = True
+                            logger.warning(
+                                "Using Workday listing summaries for %s "
+                                "after detail requests were blocked (%s)",
+                                self.company.slug,
+                                exc.kind,
+                            )
+                        else:
+                            detail = detail_response.json().get("jobPostingInfo", {})
+                            description = _html_text(
+                                detail.get("jobDescription") or description
+                            )
                     _append_raw_job(
                         jobs,
                         "Workday",
@@ -410,6 +524,7 @@ class SourceRunner:
     def __init__(self, client: httpx.AsyncClient, max_concurrency: int = 5):
         self.client = client
         self.semaphore = asyncio.Semaphore(max_concurrency)
+        self.workday_lock = asyncio.Lock()
         self.domain_locks: dict[str, asyncio.Lock] = {}
 
     async def fetch(self, company: CompanyConfig) -> list[RawJob]:
@@ -417,4 +532,8 @@ class SourceRunner:
         lock = self.domain_locks.setdefault(domain, asyncio.Lock())
         async with self.semaphore, lock:
             source = SOURCE_CLASSES[company.ats_type](company, self.client)
+            if company.ats_type == AtsType.WORKDAY:
+                # Different Workday tenants still share the Actions runner IP.
+                async with self.workday_lock:
+                    return await source.fetch()
             return await source.fetch()
