@@ -100,9 +100,7 @@ class WorkdayBlocked(SourceError):
         self.kind = kind
         self.retry_after = retry_after
         retry_hint = f"; retry_after={retry_after:g}s" if retry_after is not None else ""
-        super().__init__(
-            f"Workday {method} HTTP {status_code} ({kind}){retry_hint}"
-        )
+        super().__init__(f"Workday {method} HTTP {status_code} ({kind}){retry_hint}")
 
 
 def _retry_after_seconds(value: str | None) -> float | None:
@@ -340,12 +338,9 @@ class WorkdaySource(JobSource):
             if challenge or response.status_code == 429:
                 kind = "cloudflare_challenge" if challenge else "rate_limited"
                 retry_after = _retry_after_seconds(response.headers.get("retry-after"))
-                blocked = WorkdayBlocked(
-                    response.status_code, method, kind, retry_after
-                )
+                blocked = WorkdayBlocked(response.status_code, method, kind, retry_after)
                 logger.warning(
-                    "Workday blocked %s for %s: kind=%s status=%d "
-                    "retry_after=%s content_type=%s",
+                    "Workday blocked %s for %s: kind=%s status=%d retry_after=%s content_type=%s",
                     method,
                     self.company.slug,
                     kind,
@@ -356,15 +351,10 @@ class WorkdaySource(JobSource):
                 if (
                     challenge
                     or attempt >= self.RATE_LIMIT_RETRIES
-                    or (
-                        retry_after is not None
-                        and retry_after > self.MAX_RETRY_AFTER_SECONDS
-                    )
+                    or (retry_after is not None and retry_after > self.MAX_RETRY_AFTER_SECONDS)
                 ):
                     raise blocked
-                await asyncio.sleep(
-                    retry_after if retry_after is not None else 5.0
-                )
+                await asyncio.sleep(retry_after if retry_after is not None else 5.0)
                 continue
             response.raise_for_status()
             return response
@@ -383,7 +373,8 @@ class WorkdaySource(JobSource):
             offset = 0
             while True:
                 response = await self._request(
-                    "POST", endpoint,
+                    "POST",
+                    endpoint,
                     json={
                         "appliedFacets": {},
                         "limit": limit,
@@ -438,9 +429,7 @@ class WorkdaySource(JobSource):
                             )
                         else:
                             detail = detail_response.json().get("jobPostingInfo", {})
-                            description = _html_text(
-                                detail.get("jobDescription") or description
-                            )
+                            description = _html_text(detail.get("jobDescription") or description)
                     _append_raw_job(
                         jobs,
                         "Workday",
@@ -537,6 +526,4 @@ class SourceRunner:
                 async with self.semaphore, lock:
                     return await WorkdaySource(company, self.client).fetch()
         async with self.semaphore, lock:
-            return await SOURCE_CLASSES[company.ats_type](
-                company, self.client
-            ).fetch()
+            return await SOURCE_CLASSES[company.ats_type](company, self.client).fetch()
