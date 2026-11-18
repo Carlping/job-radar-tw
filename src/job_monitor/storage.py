@@ -1500,10 +1500,18 @@ class Storage:
                 )
             )
 
-    def source_succeeded(self, company_id: str, run_id: str | None = None) -> None:
+    def source_succeeded(self, company_id: str, run_id: str | None = None) -> int:
+        """Reset the failure streak and return its previous length."""
         with self.engine.begin() as conn:
             if run_id:
                 self._assert_active_run(conn, run_id)
+            previous_failures = int(
+                conn.execute(
+                    select(companies.c.consecutive_failures)
+                    .where(companies.c.id == company_id)
+                    .with_for_update()
+                ).scalar_one()
+            )
             conn.execute(
                 update(companies)
                 .where(companies.c.id == company_id)
@@ -1513,6 +1521,36 @@ class Storage:
                     baseline_completed=True,
                 )
             )
+            return previous_failures
+
+    def recently_alerted_source(
+        self, company_slug: str, error_kind: str | None = None, *, hours: int = 24
+    ) -> bool:
+        """Find successful alert deliveries recorded in completed run errors.
+
+        Reuses the existing run history, avoiding a schema migration. This is
+        bounded to a time window and does not inspect company configuration.
+        """
+        cutoff = datetime.now(UTC) - timedelta(hours=hours)
+        with self.engine.connect() as conn:
+            rows = conn.execute(
+                select(source_runs.c.errors).where(
+                    source_runs.c.finished_at >= cutoff
+                )
+            ).scalars()
+            for errors in rows:
+                if not isinstance(errors, list):
+                    continue
+                for error in errors:
+                    if not isinstance(error, dict):
+                        continue
+                    if (
+                        error.get("company") == company_slug
+                        and error.get("alert_sent") is True
+                        and (error_kind is None or error.get("kind") == error_kind)
+                    ):
+                        return True
+        return False
 
     def source_failed(self, company_id: str, run_id: str | None = None) -> int:
         with self.engine.begin() as conn:
