@@ -21,7 +21,7 @@ from .notifier import (
 )
 from .resume import load_resume
 from .schedule import local_run_key
-from .sources import SourceRunner
+from .sources import SourceRunner, source_error_kind
 from .storage import PERSIST_CHUNK_SIZE, JobIndexRow, JobPlan, MatchDecision, Storage
 
 logger = logging.getLogger(__name__)
@@ -265,17 +265,30 @@ async def run_pipeline(
                     logger.exception(
                         "Source failed: %s", company.slug, exc_info=source_result.error
                     )
-                    report.errors.append(
-                        {"company": company.slug, "error": str(source_result.error)[:500]}
-                    )
+                    kind = source_error_kind(source_result.error)
+                    failure_record = {
+                        "company": company.slug,
+                        "error": str(source_result.error)[:500],
+                        "kind": kind,
+                    }
+                    report.errors.append(failure_record)
                     failures = storage.source_failed(company_id, run_id) if storage else 1
-                    if failures >= 3:
-                        await _try_send_notification(
+                    # Send once per source and error category per 24h. Record
+                    # successful delivery in the completed run for next time.
+                    if (
+                        failures >= 3
+                        and notifier is not None
+                        and storage is not None
+                        and not storage.recently_alerted_source(company.slug, kind)
+                    ):
+                        sent = await _try_send_notification(
                             notifier,
                             render_failure_alert(company.name, failures, str(source_result.error)),
                             report,
                             context=f"source failure alert for {company.slug}",
                         )
+                        if sent:
+                            failure_record["alert_sent"] = True
                     continue
 
                 raw_jobs = source_result.raw_jobs
@@ -433,7 +446,20 @@ async def run_pipeline(
                     if use_batch:
                         batch.flush()
                     report.jobs_closed += storage.mark_missing(company_id, run_id)
-                    storage.source_succeeded(company_id, run_id)
+                    previous_failures = storage.source_succeeded(company_id, run_id)
+                    if (
+                        previous_failures
+                        and previous_failures >= 3
+                        and notifier is not None
+                        and storage.recently_alerted_source(company.slug, hours=720)
+                    ):
+                        await _try_send_notification(
+                            notifier,
+                            f"✅ 職缺來源已恢復\\n{company.name}\\n"
+                            f"先前連續失敗：{previous_failures} 次",
+                            report,
+                            context=f"source recovery alert for {company.slug}",
+                        )
                     logger.info(
                         "Persisted company %s: jobs_fetched=%d new=%d changed=%d "
                         "unchanged=%d elapsed_seconds=%.2f",
