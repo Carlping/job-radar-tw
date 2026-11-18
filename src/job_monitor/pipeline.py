@@ -497,14 +497,9 @@ async def run_pipeline(
             # tenants hit the same protection in this run.
             for kind, affected in pending_workday_alerts.items():
                 names = "\n".join(
-                    f"• {html.escape(name)}（{failures} 次）"
-                    for name, failures, _ in affected[:20]
+                    f"• {html.escape(name)}（{failures} 次）" for name, failures, _ in affected[:20]
                 )
-                extra = (
-                    f"\n另外 {len(affected) - 20} 家公司"
-                    if len(affected) > 20
-                    else ""
-                )
+                extra = f"\n另外 {len(affected) - 20} 家公司" if len(affected) > 20 else ""
                 sent = await _try_send_notification(
                     notifier,
                     f"⚠️ Workday 來源連續失敗：{html.escape(kind)}\n"
