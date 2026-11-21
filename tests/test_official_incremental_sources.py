@@ -45,7 +45,7 @@ async def test_eightfold_official_search_is_incremental_and_uses_stable_ids():
     )
     cfg = _company(
         "eightfold",
-        {"search_url": api, "domain": "example.com", "search_texts": ["data"]},
+        {"search_url": api, "domain": "example.com", "search_texts": ["data"], "max_details": 0},
         "https://jobs.example.com/careers",
     )
     async with httpx.AsyncClient() as client:
@@ -69,7 +69,7 @@ async def test_eightfold_rejects_valid_http_with_invalid_search_data():
     )
     cfg = _company(
         "eightfold",
-        {"search_url": api, "domain": "example.com"},
+        {"search_url": api, "domain": "example.com", "max_details": 0},
         "https://jobs.example.com/careers",
     )
     async with httpx.AsyncClient() as client:
@@ -128,3 +128,50 @@ async def test_html_careers_fails_closed_on_missing_cards():
 def test_incremental_ats_types_exist():
     assert AtsType("eightfold") is AtsType.EIGHTFOLD
     assert AtsType("career_html") is AtsType.CAREER_HTML
+
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_eightfold_enriches_job_with_official_description():
+    api = "https://jobs.example.com/api/pcsx/search"
+    details = "https://jobs.example.com/api/pcsx/position_details"
+    search = respx.get(api).mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "status": 200,
+                "data": {
+                    "count": 1,
+                    "positions": [
+                        {
+                            "id": 893398847910,
+                            "name": "Senior Data Analyst",
+                            "locations": ["Austin, TX"],
+                            "department": "Analytics",
+                        }
+                    ],
+                },
+            },
+        )
+    )
+    detail = respx.get(details).mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "status": 200,
+                "data": {"jobDescription": "<p>SQL, Python, Tableau and analytics</p>"},
+            },
+        )
+    )
+    cfg = _company(
+        "eightfold",
+        {"search_url": api, "domain": "example.com", "max_details": 1},
+        "https://jobs.example.com/careers",
+    )
+    async with httpx.AsyncClient() as client:
+        found = await EightfoldSource(cfg, client).fetch()
+    assert search.call_count == 1
+    assert detail.call_count == 1
+    assert detail.calls[0].request.url.params["position_id"] == "893398847910"
+    assert found[0].description_raw == "SQL, Python, Tableau and analytics"
