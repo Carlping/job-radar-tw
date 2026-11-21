@@ -525,6 +525,43 @@ class EightfoldSource(JobSource):
                     )
                 if len(positions) < 10:
                     break
+
+        # Enrich a bounded number of recent postings with the official
+        # jobDescription, enabling the existing skills-based matching rules.
+        details_limit = min(max(int(cfg.get("max_details", 10)), 0), 30)
+        details_url = str(
+            cfg.get("details_url") or endpoint.rsplit("/", 1)[0] + "/position_details"
+        )
+        for index, job in enumerate(jobs[:details_limit]):
+            await asyncio.sleep(0.5)
+            try:
+                response = await self.client.get(
+                    details_url,
+                    params={
+                        "position_id": job.external_job_id.removeprefix("eightfold:"),
+                        "domain": domain,
+                        "hl": "en",
+                    },
+                )
+                if response.status_code in (403, 429):
+                    logger.warning(
+                        "Eightfold details blocked for %s; keeping listing summaries",
+                        self.company.slug,
+                    )
+                    break
+                response.raise_for_status()
+                payload = response.json()
+                details = payload.get("data") if isinstance(payload, dict) else None
+                if not isinstance(details, dict):
+                    continue
+                description = _html_text(details.get("jobDescription"))
+                if description:
+                    jobs[index] = job.model_copy(update={"description_raw": description})
+            except (httpx.HTTPError, ValueError, TypeError):
+                logger.warning(
+                    "Eightfold detail unavailable for %s; keeping listing summary",
+                    self.company.slug,
+                )
         return jobs
 
 
