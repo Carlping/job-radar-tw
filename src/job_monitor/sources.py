@@ -786,7 +786,12 @@ class SourceRunner:
                                 )
                                 for row in rows
                             ]
-                        except (httpx.HTTPError, SourceError, SitemapError, ValueError) as backup_exc:
+                        except (
+                            httpx.HTTPError,
+                            SourceError,
+                            SitemapError,
+                            ValueError,
+                        ) as backup_exc:
                             failures.append(f"{target.ats_type.value}: {type(backup_exc).__name__}")
                             logger.warning(
                                 "Workday fallback %s failed for %s: %s",
