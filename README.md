@@ -6,9 +6,19 @@
 
 定時查看公司官網的職缺，把結果存進 Supabase，再用 Telegram 通知你。排程跑在 GitHub Actions，不需要自己養一台伺服器。
 
-目前支援 Greenhouse、Lever、Ashby、SmartRecruiters、Workday，以及帶有 JSON-LD 的公開職缺頁。這個專案只讀公開來源，不會代投履歷，也不是秒級更新服務。
+目前支援 Greenhouse、Lever、Ashby、SmartRecruiters、Workday、Eightfold、部分官方職缺清單 HTML，以及帶有 JSON-LD 的公開職缺頁。這個專案只讀公開來源，不會代投履歷，也不是秒級更新服務。
 
 Cloudflare 不在基本部署流程裡。只有想把 dashboard 放上網時，才需要看[選用的 Cloudflare 文件](docs/cloudflare-deploy.md)。
+
+## Workday 遇到 429 時的官方備援來源
+
+若某家公司的 Workday CXS API 被 Cloudflare 擋下，應優先確認是否有其他官方公開職缺入口。
+
+- **NVIDIA** 的預設設定改用官方 Eightfold `jobs.nvidia.com/api/pcsx/search`，對多個搜尋關鍵字各讀取最近幾頁，並限制每日詳情請求數量。單筆詳情使用官方 `/api/pcsx/position_details`。
+- **Applied Materials** 的設定改用公開 `jobs.appliedmaterials.com/en/search-jobs`，從最新清單讀取職缺，視需要補抓職缺詳情。預設仍維持停用，請自行確認篩選條件後再啟用。
+- 新增 `ats_type: eightfold` 及 `ats_type: career_html`。兩者皆屬**增量清單**，只能判斷有哪些新職缺，不能透過未出現在最新清單中推論職缺已下架。
+- 切換來源後以新職缺 ID 建立資料紀錄，第一次取得的職缺可能被識別為新資料。可先使用單公司 `monitor dry-run --company nvidia` 驗證。
+- 這些官方來源的可用性可能改變；429、403 或非預期頁面格式仍會如實報錯。不要以頻繁重試或代理輪換規避封鎖。
 
 ## 部署前要準備什麼
 

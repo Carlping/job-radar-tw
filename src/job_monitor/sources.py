@@ -7,6 +7,7 @@ from abc import ABC, abstractmethod
 from datetime import UTC, datetime
 from email.utils import parsedate_to_datetime
 from typing import Any
+from urllib.parse import urljoin, urlsplit
 
 import httpx
 from bs4 import BeautifulSoup
@@ -450,6 +451,204 @@ class WorkdaySource(JobSource):
         return jobs
 
 
+class EightfoldSource(JobSource):
+    """Incremental official Eightfold search. This is not a full vacancy snapshot."""
+
+    async def fetch(self) -> list[RawJob]:
+        cfg = self.company.ats_config
+        endpoint = str(cfg["search_url"])
+        base = str(self.company.careers_url).rstrip("/")
+        domain = str(cfg["domain"])
+        terms = cfg.get("search_texts") or [""]
+        max_pages = min(max(int(cfg.get("max_pages", 2)), 1), 5)
+        jobs: list[RawJob] = []
+        seen: set[str] = set()
+        for term in terms[:5]:
+            for page in range(max_pages):
+                if jobs or page:
+                    await asyncio.sleep(0.5)
+                response = await self.client.get(
+                    endpoint,
+                    params={
+                        "domain": domain,
+                        "query": str(term),
+                        "location": "",
+                        "start": page * 10,
+                        "sort_by": "timestamp",
+                    },
+                )
+                response.raise_for_status()
+                payload = response.json()
+                data = payload.get("data") if isinstance(payload, dict) else None
+                if not isinstance(data, dict) or not isinstance(data.get("positions"), list):
+                    raise SourceError(
+                        f"Eightfold response for {self.company.slug} has no positions list"
+                    )
+                positions = data["positions"]
+                if not positions and page == 0 and int(data.get("count") or 0):
+                    raise SourceError(
+                        f"Eightfold returned no positions for {self.company.slug} despite count"
+                    )
+                for item in positions:
+                    if not isinstance(item, dict):
+                        continue
+                    job_id = item.get("id")
+                    title = item.get("name")
+                    if not job_id or not _usable_text(title):
+                        _warn_skipped_item("Eightfold", self.company.slug, "invalid id/title", item)
+                        continue
+                    stable_id = str(job_id)
+                    if stable_id in seen:
+                        continue
+                    seen.add(stable_id)
+                    locations = item.get("locations") or []
+                    location = (
+                        "; ".join(str(value) for value in locations)
+                        if isinstance(locations, list)
+                        else str(locations)
+                    )
+                    # Use the official careers route and stable Eightfold position id.
+                    job_url = urljoin(base + "/", "/careers/job/" + stable_id)
+                    _append_raw_job(
+                        jobs,
+                        "Eightfold",
+                        self.company.slug,
+                        item,
+                        source_company=self.company.slug,
+                        external_job_id="eightfold:" + stable_id,
+                        title=title,
+                        location_raw=location,
+                        description_raw=str(item.get("department") or ""),
+                        posted_at=_parse_datetime(item.get("postedTs")),
+                        url=job_url,
+                        metadata={"eightfold": item},
+                    )
+                if len(positions) < 10:
+                    break
+
+        # Enrich a bounded number of recent postings with the official
+        # jobDescription, enabling the existing skills-based matching rules.
+        details_limit = min(max(int(cfg.get("max_details", 10)), 0), 30)
+        details_url = str(
+            cfg.get("details_url") or endpoint.rsplit("/", 1)[0] + "/position_details"
+        )
+        for index, job in enumerate(jobs[:details_limit]):
+            await asyncio.sleep(0.5)
+            try:
+                response = await self.client.get(
+                    details_url,
+                    params={
+                        "position_id": job.external_job_id.removeprefix("eightfold:"),
+                        "domain": domain,
+                        "hl": "en",
+                    },
+                )
+                if response.status_code in (403, 429):
+                    logger.warning(
+                        "Eightfold details blocked for %s; keeping listing summaries",
+                        self.company.slug,
+                    )
+                    break
+                response.raise_for_status()
+                payload = response.json()
+                details = payload.get("data") if isinstance(payload, dict) else None
+                if not isinstance(details, dict):
+                    continue
+                description = _html_text(details.get("jobDescription"))
+                if description:
+                    jobs[index] = job.model_copy(update={"description_raw": description})
+            except (httpx.HTTPError, ValueError, TypeError):
+                logger.warning(
+                    "Eightfold detail unavailable for %s; keeping listing summary",
+                    self.company.slug,
+                )
+        return jobs
+
+
+class CareerHtmlSource(JobSource):
+    """Bounded public HTML listing; discoveries never imply a vacancy has closed."""
+
+    async def fetch(self) -> list[RawJob]:
+        cfg = self.company.ats_config
+        listing_url = str(cfg["listing_url"])
+        response = await self.client.get(listing_url)
+        response.raise_for_status()
+        soup = BeautifulSoup(response.text, "html.parser")
+        cards = soup.select(".search-results-list__item")
+        if not cards:
+            raise SourceError(
+                f"Career listing for {self.company.slug} has no recognizable job cards"
+            )
+        seen: set[str] = set()
+        jobs: list[RawJob] = []
+        expected_host = urlsplit(listing_url).hostname
+        fetch_details = bool(cfg.get("fetch_details", False))
+        for card in cards[:30]:
+            link = card.select_one('a[href*="/job/"]')
+            if link is None:
+                continue
+            title = link.get_text(" ", strip=True)
+            job_url = urljoin(listing_url, link.get("href", ""))
+            parts = urlsplit(job_url)
+            if not title or parts.hostname != expected_host or "/job/" not in parts.path:
+                continue
+            job_id = parts.path.rstrip("/").split("/")[-1]
+            if not job_id or job_id in seen:
+                continue
+            seen.add(job_id)
+            segments = list(card.stripped_strings)
+            remaining = [value for value in segments if value != title]
+            date_text = next(
+                (value for value in remaining if _parse_career_date(value)),
+                None,
+            )
+            location = next(
+                (value for value in remaining if value != date_text),
+                "",
+            )
+            description = " ".join(remaining)
+            if fetch_details:
+                await asyncio.sleep(0.5)
+                try:
+                    detail = await self.client.get(job_url)
+                    detail.raise_for_status()
+                    body = BeautifulSoup(detail.text, "html.parser")
+                    section = body.select_one("[class*='job-description'], [id*='job-description']")
+                    if section:
+                        description = section.get_text(" ", strip=True)[:15000]
+                except httpx.HTTPError:
+                    logger.warning(
+                        "Career detail unavailable for %s; retaining listing summary",
+                        self.company.slug,
+                    )
+            _append_raw_job(
+                jobs,
+                "Career HTML",
+                self.company.slug,
+                {"title": title, "url": job_url},
+                source_company=self.company.slug,
+                external_job_id="careerhtml:" + job_id,
+                title=title,
+                location_raw=location,
+                description_raw=description,
+                posted_at=_parse_career_date(date_text),
+                url=job_url,
+                metadata={"career_html": {"listing_url": listing_url}},
+            )
+        if not jobs:
+            raise SourceError(f"Career listing for {self.company.slug} yielded no valid jobs")
+        return jobs
+
+
+def _parse_career_date(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    try:
+        return datetime.strptime(value, "%m/%d/%Y").replace(tzinfo=UTC)
+    except ValueError:
+        return None
+
+
 class JsonLdSource(JobSource):
     async def fetch(self) -> list[RawJob]:
         response = await self.client.get(str(self.company.careers_url))
@@ -505,6 +704,8 @@ SOURCE_CLASSES: dict[AtsType, type[JobSource]] = {
     AtsType.ASHBY: AshbySource,
     AtsType.SMARTRECRUITERS: SmartRecruitersSource,
     AtsType.WORKDAY: WorkdaySource,
+    AtsType.EIGHTFOLD: EightfoldSource,
+    AtsType.CAREER_HTML: CareerHtmlSource,
     AtsType.JSONLD: JsonLdSource,
 }
 

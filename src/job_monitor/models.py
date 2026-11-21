@@ -17,6 +17,8 @@ class AtsType(StrEnum):
     ASHBY = "ashby"
     SMARTRECRUITERS = "smartrecruiters"
     WORKDAY = "workday"
+    EIGHTFOLD = "eightfold"
+    CAREER_HTML = "career_html"
     JSONLD = "jsonld"
 
 
@@ -117,6 +119,8 @@ class CompanyConfig(BaseModel):
             AtsType.ASHBY: {"board_name"},
             AtsType.SMARTRECRUITERS: {"company_identifier"},
             AtsType.WORKDAY: {"endpoint", "site", "detail_base_url"},
+            AtsType.EIGHTFOLD: {"search_url", "domain"},
+            AtsType.CAREER_HTML: {"listing_url"},
             AtsType.JSONLD: set(),
         }[self.ats_type]
         missing = required - set(self.ats_config)

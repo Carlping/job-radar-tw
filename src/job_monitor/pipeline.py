@@ -12,7 +12,7 @@ import httpx
 from .config import CandidateProfile, ProfileConfig, SearchPreferences, Settings
 from .llm import LLMEnricher
 from .matching import match_job, parse_job
-from .models import CompanyConfig, MatchedJob, MatchResult, ParsedJob, RawJob
+from .models import AtsType, CompanyConfig, MatchedJob, MatchResult, ParsedJob, RawJob
 from .notifier import (
     TelegramNotifier,
     render_failure_alert,
@@ -455,7 +455,15 @@ async def run_pipeline(
                 if storage:
                     if use_batch:
                         batch.flush()
-                    report.jobs_closed += storage.mark_missing(company_id, run_id)
+                    if company.ats_type not in (AtsType.EIGHTFOLD, AtsType.CAREER_HTML):
+                        report.jobs_closed += storage.mark_missing(company_id, run_id)
+                    else:
+                        # Incremental feeds show only recent jobs, not all open
+                        # jobs. Absence in a feed must not close a posting.
+                        logger.info(
+                            "Skipping missing-job closure for partial source %s",
+                            company.slug,
+                        )
                     previous_failures = storage.source_succeeded(company_id, run_id)
                     if (
                         previous_failures
