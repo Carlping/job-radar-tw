@@ -138,7 +138,10 @@ class CompanyConfig(BaseModel):
                 raise ValueError("fallback_sources must be a list of up to three alternatives")
             for entry in fallbacks:
                 if not isinstance(entry, dict) or entry.get("ats_type") not in (
-                    "eightfold", "career_html", "sitemap", "jsonld"
+                    "eightfold",
+                    "career_html",
+                    "sitemap",
+                    "jsonld",
                 ):
                     raise ValueError("fallback_sources entries require a supported ats_type")
                 if not isinstance(entry.get("careers_url"), str):
