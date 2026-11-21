@@ -130,7 +130,6 @@ def test_incremental_ats_types_exist():
     assert AtsType("career_html") is AtsType.CAREER_HTML
 
 
-
 @pytest.mark.asyncio
 @respx.mock
 async def test_eightfold_enriches_job_with_official_description():
