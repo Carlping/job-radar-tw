@@ -508,7 +508,7 @@ class EightfoldSource(JobSource):
                         else str(locations)
                     )
                     # Use the official careers route and stable Eightfold position id.
-                    job_url = urljoin(base + "/", "careers/job/" + stable_id)
+                    job_url = urljoin(base + "/", "/careers/job/" + stable_id)
                     _append_raw_job(
                         jobs,
                         "Eightfold",
