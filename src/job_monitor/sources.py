@@ -576,9 +576,7 @@ class CareerHtmlSource(JobSource):
                     detail = await self.client.get(job_url)
                     detail.raise_for_status()
                     body = BeautifulSoup(detail.text, "html.parser")
-                    section = body.select_one(
-                        "[class*='job-description'], [id*='job-description']"
-                    )
+                    section = body.select_one("[class*='job-description'], [id*='job-description']")
                     if section:
                         description = section.get_text(" ", strip=True)[:15000]
                 except httpx.HTTPError:
