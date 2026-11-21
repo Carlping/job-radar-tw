@@ -122,9 +122,7 @@ def _jobpostings(node: object) -> list[dict]:
     if not isinstance(node, dict):
         return []
     kinds = node.get("@type")
-    is_job = kinds == "JobPosting" or (
-        isinstance(kinds, list) and "JobPosting" in kinds
-    )
+    is_job = kinds == "JobPosting" or (isinstance(kinds, list) and "JobPosting" in kinds)
     found = [node] if is_job else []
     if isinstance(node.get("@graph"), list):
         found.extend(_jobpostings(node["@graph"]))
@@ -173,11 +171,7 @@ def _xml_locations(data: bytes) -> tuple[str, list[tuple[str, str]]]:
         tag = entry.tag.rsplit("}", 1)[-1]
         if tag not in ("sitemap", "url"):
             continue
-        fields = {
-            field.tag.rsplit("}", 1)[-1]: field.text
-            for field in entry
-            if field.text
-        }
+        fields = {field.tag.rsplit("}", 1)[-1]: field.text for field in entry if field.text}
         loc = fields.get("loc")
         if loc:
             entries.append((loc.strip(), (fields.get("lastmod") or "").strip()))
@@ -186,9 +180,7 @@ def _xml_locations(data: bytes) -> tuple[str, list[tuple[str, str]]]:
     return name, entries
 
 
-async def fetch_sitemap_jobs(
-    company: CompanyConfig, client: httpx.AsyncClient
-) -> list[RawJob]:
+async def fetch_sitemap_jobs(company: CompanyConfig, client: httpx.AsyncClient) -> list[RawJob]:
     config = company.ats_config
     root_url = str(company.careers_url)
     host = (urlsplit(root_url).hostname or "").lower()
@@ -213,11 +205,7 @@ async def fetch_sitemap_jobs(
         if line.lower().startswith("sitemap:"):
             declared.append(line.split(":", 1)[1].strip())
     explicit = config.get("sitemap_url")
-    candidates = (
-        [str(explicit)]
-        if explicit
-        else declared + [urljoin(origin + "/", "sitemap.xml")]
-    )
+    candidates = [str(explicit)] if explicit else declared + [urljoin(origin + "/", "sitemap.xml")]
     max_sitemaps = min(max(int(config.get("max_sitemaps", 5)), 1), MAX_SITEMAPS)
     max_pages = min(max(int(config.get("max_job_pages", 20)), 1), MAX_JOB_PAGES)
     hint = str(config.get("job_url_contains", "")).lower()
@@ -232,7 +220,9 @@ async def fetch_sitemap_jobs(
         visited.add(sitemap_url)
         resp = await client.get(sitemap_url, follow_redirects=False)
         if resp.status_code != 200:
-            logger.info("Skipping unavailable sitemap for %s: HTTP %d", company.slug, resp.status_code)
+            logger.info(
+                "Skipping unavailable sitemap for %s: HTTP %d", company.slug, resp.status_code
+            )
             continue
         kind, entries = _xml_locations(resp.content)
         for loc, lastmod in entries:
@@ -244,8 +234,18 @@ async def fetch_sitemap_jobs(
             else:
                 path = urlsplit(loc).path.lower()
                 is_job = (
-                    hint in path if hint else any(
-                        term in path for term in ("/job/", "/jobs/", "/career/", "/careers/", "/vacanc", "/position/")
+                    hint in path
+                    if hint
+                    else any(
+                        term in path
+                        for term in (
+                            "/job/",
+                            "/jobs/",
+                            "/career/",
+                            "/careers/",
+                            "/vacanc",
+                            "/position/",
+                        )
                     )
                 )
                 if is_job and robots_allowed(robots_text, loc):
