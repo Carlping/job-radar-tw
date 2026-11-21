@@ -19,6 +19,7 @@ class AtsType(StrEnum):
     WORKDAY = "workday"
     EIGHTFOLD = "eightfold"
     CAREER_HTML = "career_html"
+    SITEMAP = "sitemap"
     JSONLD = "jsonld"
 
 
@@ -121,6 +122,7 @@ class CompanyConfig(BaseModel):
             AtsType.WORKDAY: {"endpoint", "site", "detail_base_url"},
             AtsType.EIGHTFOLD: {"search_url", "domain"},
             AtsType.CAREER_HTML: {"listing_url"},
+            AtsType.SITEMAP: set(),
             AtsType.JSONLD: set(),
         }[self.ats_type]
         missing = required - set(self.ats_config)
@@ -128,6 +130,33 @@ class CompanyConfig(BaseModel):
             raise ValueError(
                 f"{self.ats_type.value} source is missing config keys: {sorted(missing)}"
             )
+        fallbacks = self.ats_config.get("fallback_sources", [])
+        if fallbacks:
+            if self.ats_type is not AtsType.WORKDAY:
+                raise ValueError("fallback_sources is currently supported for Workday sources only")
+            if not isinstance(fallbacks, list) or len(fallbacks) > 3:
+                raise ValueError("fallback_sources must be a list of up to three alternatives")
+            for entry in fallbacks:
+                if not isinstance(entry, dict) or entry.get("ats_type") not in (
+                    "eightfold",
+                    "career_html",
+                    "sitemap",
+                    "jsonld",
+                ):
+                    raise ValueError("fallback_sources entries require a supported ats_type")
+                if not isinstance(entry.get("careers_url"), str):
+                    raise ValueError("fallback_sources entries require careers_url")
+                config = entry.get("ats_config", {})
+                if not isinstance(config, dict):
+                    raise ValueError("fallback_sources ats_config must be a mapping")
+                CompanyConfig.model_validate(
+                    {
+                        **self.model_dump(exclude={"ats_config", "ats_type", "careers_url"}),
+                        "ats_type": entry["ats_type"],
+                        "careers_url": entry["careers_url"],
+                        "ats_config": config,
+                    }
+                )
         return self
 
 

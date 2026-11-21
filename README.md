@@ -20,6 +20,56 @@ Cloudflare 不在基本部署流程裡。只有想把 dashboard 放上網時，�
 - 切換來源後以新職缺 ID 建立資料紀錄，第一次取得的職缺可能被識別為新資料。可先使用單公司 `monitor dry-run --company nvidia` 驗證。
 - 這些官方來源的可用性可能改變；429、403 或非預期頁面格式仍會如實報錯。不要以頻繁重試或代理輪換規避封鎖。
 
+## 自訂公司的 Workday 429 通用備援
+
+任何使用者都可以替 **自己的公司** 設定其他官方公開來源，無須修改 Python 程式碼。系統只在 Workday 回傳 403 或 429 時依序嘗試備援來源；沒有驗證過的官方來源時會保留明確的失敗訊息，不會假裝已取得全部職缺。
+
+可在 `config/companies.yml` 的 Workday `ats_config` 下設定 `fallback_sources`，最多三個：
+
+```yaml
+companies:
+  - slug: example-corp
+    name: Example Corp
+    careers_url: https://example.wd1.myworkdayjobs.com/External
+    ats_type: workday
+    industry: technology
+    profiles: [tech]
+    enabled: false
+    source_verified: false
+    ats_config:
+      endpoint: https://example.wd1.myworkdayjobs.com/wday/cxs/example/External/jobs
+      site: example.wd1.myworkdayjobs.com
+      detail_base_url: https://example.wd1.myworkdayjobs.com/en-US/External
+      search_texts: [data, analytics]
+      fallback_sources:
+        - ats_type: sitemap
+          careers_url: https://careers.example.com/jobs
+          ats_config:
+            sitemap_url: https://careers.example.com/sitemap.xml
+            job_url_contains: /jobs/
+            max_job_pages: 20
+        - ats_type: eightfold
+          careers_url: https://careers.example.com/careers
+          ats_config:
+            search_url: https://careers.example.com/api/pcsx/search
+            domain: example.com
+            max_pages: 2
+            max_details: 10
+```
+
+以上的網址都只是**格式示例**，不能直接套用到真實企業。使用者必須先確認替代入口確實屬於要監控的企業、資料可公開存取且網站規則允許讀取，再填入真實網址。
+
+目前可選的備援類型：
+
+- `sitemap`：取得網站公開 `robots.txt` 與 XML Sitemap，有限量地讀取符合 JobPosting JSON-LD 的職缺頁。可設定 `sitemap_url`、`job_url_contains`、`max_sitemaps`、`max_job_pages`。網址必須是同網域的公開 HTTPS 網址，拒絕重新導向與不符合存取規則的路徑。
+- `eightfold`：公開 Eightfold PCS 搜尋與限量詳情，使用 `search_url`、`domain`、`search_texts`、`max_pages`、`max_details`。
+- `career_html`：公開職缺清單 HTML，需符合目前 `.search-results-list__item` 結構，設定 `listing_url`，可選 `fetch_details: true`。
+- `jsonld`：單一公開頁面上的 JobPosting 結構化資料，使用備援項目的 `careers_url`。
+
+新加入公司後，可先設定 `enabled: false`、`source_verified: false`，用 `monitor dry-run --company example-corp` 實測；成功後再正式啟用。當備援抓取成功，會沿用原有的比對與 Telegram 流程。備援清單只代表最新被發現的部分職缺，**不會因某個職缺未列出就標記它已下架**。
+
+**適用範圍與限制：** 如果某家公司只有被 Cloudflare 阻擋的 Workday 網域、沒有可確認且允許存取的其他官方資料來源，這個機制仍無法恢復它的職缺。企業官網、RSS、授權資料服務或經許可的資料提供者需要另外確認。不得利用代理輪換、Challenge 規避等方式突破存取限制。
+
 ## 部署前要準備什麼
 
 - 一個 GitHub 帳號。

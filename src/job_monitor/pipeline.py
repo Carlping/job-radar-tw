@@ -455,7 +455,11 @@ async def run_pipeline(
                 if storage:
                     if use_batch:
                         batch.flush()
-                    if company.ats_type not in (AtsType.EIGHTFOLD, AtsType.CAREER_HTML):
+                    if company.ats_type not in (
+                        AtsType.EIGHTFOLD,
+                        AtsType.CAREER_HTML,
+                        AtsType.SITEMAP,
+                    ) and not any(item.metadata.get("_incremental_fallback") for item in raw_jobs):
                         report.jobs_closed += storage.mark_missing(company_id, run_id)
                     else:
                         # Incremental feeds show only recent jobs, not all open

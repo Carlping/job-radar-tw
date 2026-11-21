@@ -15,6 +15,7 @@ from pydantic import ValidationError
 from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_exponential
 
 from .models import AtsType, CompanyConfig, RawJob
+from .sitemap import SitemapError, fetch_sitemap_jobs
 
 logger = logging.getLogger(__name__)
 
@@ -649,6 +650,13 @@ def _parse_career_date(value: str | None) -> datetime | None:
         return None
 
 
+class SitemapSource(JobSource):
+    """Use permitted JobPosting pages found from a company's own sitemap."""
+
+    async def fetch(self) -> list[RawJob]:
+        return await fetch_sitemap_jobs(self.company, self.client)
+
+
 class JsonLdSource(JobSource):
     async def fetch(self) -> list[RawJob]:
         response = await self.client.get(str(self.company.careers_url))
@@ -706,6 +714,7 @@ SOURCE_CLASSES: dict[AtsType, type[JobSource]] = {
     AtsType.WORKDAY: WorkdaySource,
     AtsType.EIGHTFOLD: EightfoldSource,
     AtsType.CAREER_HTML: CareerHtmlSource,
+    AtsType.SITEMAP: SitemapSource,
     AtsType.JSONLD: JsonLdSource,
 }
 
@@ -721,10 +730,78 @@ class SourceRunner:
         domain = httpx.URL(str(company.careers_url)).host or company.slug
         lock = self.domain_locks.setdefault(domain, asyncio.Lock())
         if company.ats_type == AtsType.WORKDAY:
-            # Wait outside the global semaphore so blocked Workday tenants
-            # do not starve Greenhouse, Lever, or other healthy ATS sources.
+            # Workday tenants often share anti-abuse systems. A blocked tenant
+            # can use an explicitly configured, permitted official alternative.
             async with self.workday_lock:
-                async with self.semaphore, lock:
-                    return await WorkdaySource(company, self.client).fetch()
+                try:
+                    async with self.semaphore, lock:
+                        return await WorkdaySource(company, self.client).fetch()
+                except (WorkdayBlocked, httpx.HTTPStatusError) as exc:
+                    if isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code not in (
+                        403,
+                        429,
+                    ):
+                        raise
+                    fallbacks = company.ats_config.get("fallback_sources") or []
+                    if not fallbacks:
+                        raise
+                    failures: list[str] = []
+                    for alternate in fallbacks:
+                        target = CompanyConfig.model_validate(
+                            {
+                                **company.model_dump(
+                                    exclude={"ats_type", "ats_config", "careers_url"}
+                                ),
+                                "ats_type": alternate["ats_type"],
+                                "ats_config": alternate.get("ats_config", {}),
+                                "careers_url": alternate["careers_url"],
+                            }
+                        )
+                        try:
+                            # The fallback can use a different official host.
+                            alternate_host = httpx.URL(str(target.careers_url)).host
+                            alternate_lock = self.domain_locks.setdefault(
+                                alternate_host or target.slug, asyncio.Lock()
+                            )
+                            async with self.semaphore, alternate_lock:
+                                rows = await SOURCE_CLASSES[target.ats_type](
+                                    target, self.client
+                                ).fetch()
+                            if not rows:
+                                raise SourceError("Fallback returned no job postings")
+                            logger.info(
+                                "Workday %s recovered via configured %s alternate",
+                                company.slug,
+                                target.ats_type.value,
+                            )
+                            return [
+                                row.model_copy(
+                                    update={
+                                        "metadata": {
+                                            **row.metadata,
+                                            "_incremental_fallback": True,
+                                            "_fallback_ats": target.ats_type.value,
+                                        }
+                                    }
+                                )
+                                for row in rows
+                            ]
+                        except (
+                            httpx.HTTPError,
+                            SourceError,
+                            SitemapError,
+                            ValueError,
+                        ) as backup_exc:
+                            failures.append(f"{target.ats_type.value}: {type(backup_exc).__name__}")
+                            logger.warning(
+                                "Workday fallback %s failed for %s: %s",
+                                target.ats_type.value,
+                                company.slug,
+                                type(backup_exc).__name__,
+                            )
+                    raise SourceError(
+                        f"Workday {company.slug} blocked and all configured fallbacks failed "
+                        f"({', '.join(failures)})"
+                    ) from exc
         async with self.semaphore, lock:
             return await SOURCE_CLASSES[company.ats_type](company, self.client).fetch()
