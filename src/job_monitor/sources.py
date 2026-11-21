@@ -15,7 +15,7 @@ from pydantic import ValidationError
 from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_exponential
 
 from .models import AtsType, CompanyConfig, RawJob
-from .sitemap import fetch_sitemap_jobs
+from .sitemap import SitemapError, fetch_sitemap_jobs
 
 logger = logging.getLogger(__name__)
 
@@ -738,7 +738,8 @@ class SourceRunner:
                         return await WorkdaySource(company, self.client).fetch()
                 except (WorkdayBlocked, httpx.HTTPStatusError) as exc:
                     if isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code not in (
-                        403, 429
+                        403,
+                        429,
                     ):
                         raise
                     fallbacks = company.ats_config.get("fallback_sources") or []
@@ -785,10 +786,8 @@ class SourceRunner:
                                 )
                                 for row in rows
                             ]
-                        except (httpx.HTTPError, SourceError, ValueError) as backup_exc:
-                            failures.append(
-                                f"{target.ats_type.value}: {type(backup_exc).__name__}"
-                            )
+                        except (httpx.HTTPError, SourceError, SitemapError, ValueError) as backup_exc:
+                            failures.append(f"{target.ats_type.value}: {type(backup_exc).__name__}")
                             logger.warning(
                                 "Workday fallback %s failed for %s: %s",
                                 target.ats_type.value,
