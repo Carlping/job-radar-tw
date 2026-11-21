@@ -95,9 +95,9 @@ async def test_generic_sitemap_respects_explicit_denial():
 @pytest.mark.asyncio
 @respx.mock
 async def test_workday_429_uses_configured_official_sitemap_fallback():
-    blocked = respx.post(
-        "https://workday.example.com/wday/cxs/acme/External/jobs"
-    ).mock(return_value=httpx.Response(429, headers={"cf-mitigated": "challenge"}))
+    blocked = respx.post("https://workday.example.com/wday/cxs/acme/External/jobs").mock(
+        return_value=httpx.Response(429, headers={"cf-mitigated": "challenge"})
+    )
     respx.get("https://careers.example.com/robots.txt").mock(
         return_value=httpx.Response(200, text=ROBOTS)
     )
@@ -117,9 +117,7 @@ async def test_workday_429_uses_configured_official_sitemap_fallback():
                 {
                     "ats_type": "sitemap",
                     "careers_url": "https://careers.example.com/jobs",
-                    "ats_config": {
-                        "sitemap_url": "https://careers.example.com/sitemap.xml"
-                    },
+                    "ats_config": {"sitemap_url": "https://careers.example.com/sitemap.xml"},
                 }
             ],
         },
