@@ -24,13 +24,17 @@ cp .env.example .env
 
 多數測試不需要真實 secrets。請勿提交 `.env`、bot token、database URL、service role key、履歷或任何個人求職資料。
 
-送出 PR 前請執行：
+送出 PR 前請執行（與 CI 完全相同的一組檢查：lockfile、lint、format、測試、config 驗證）：
 
 ```text
-uv run ruff check .
-uv run pytest -q
-uv run monitor validate-config --strict
+uv run --frozen --extra dev python scripts/check.py
 ```
+
+- 加 `--fix` 會自動修正可安全修正的 lint 問題並排版。
+- 修改 `cloudflare/` 或 `src/job_monitor/web_static/` 時加 `--with-dashboard`（需要 Node.js）。
+- 想在 commit 與 push 時自動檢查，每個 clone 執行一次 `uvx pre-commit install`。commit 時只檢查改到的 Python 檔；push 時跑完整檢查。
+
+使用 coding agent（Claude Code、Codex、Cursor 等）時，agent 規則寫在 [`AGENTS.md`](AGENTS.md)。
 
 ## 修改來源
 
