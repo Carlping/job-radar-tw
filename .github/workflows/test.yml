@@ -20,15 +20,8 @@ jobs:
       - uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
         with:
           enable-cache: true
-      - run: uv lock --check
       - run: uv sync --frozen --extra dev
-      - run: uv run ruff check .
-      - run: uv run ruff format --check .
-      - run: uv run pytest -q
-      - run: uv run monitor validate-config --strict
-      - name: Install Cloudflare dependencies
-        working-directory: cloudflare
-        run: npm ci
-      - name: Build Cloudflare dashboard
-        working-directory: cloudflare
-        run: npm run build
+      # The same command runs locally and in the pre-push hook. Add new checks
+      # to scripts/check.py, not as extra steps here.
+      - name: Run all checks
+        run: uv run --frozen --extra dev python scripts/check.py --with-dashboard
